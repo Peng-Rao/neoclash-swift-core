@@ -76,10 +76,55 @@ public struct SwiftCoreCommand: Equatable, Sendable {
 public struct SwiftCoreProxy: Equatable, Sendable {
     public var name: String
     public var type: String
+    public var server: String?
+    public var port: Int?
+    public var uuid: String?
+    public var cipher: String?
+    public var alterId: Int?
+    public var network: String?
+    public var tls: Bool
+    public var servername: String?
+    public var alpn: [String]?
+    public var skipCertVerify: Bool
+    public var flow: String?
+    public var clientFingerprint: String?
+    public var realityPublicKey: String?
+    public var realityShortId: String?
 
-    public init(name: String, type: String) {
+    public init(
+        name: String,
+        type: String,
+        server: String? = nil,
+        port: Int? = nil,
+        uuid: String? = nil,
+        cipher: String? = nil,
+        alterId: Int? = nil,
+        network: String? = nil,
+        tls: Bool = false,
+        servername: String? = nil,
+        alpn: [String]? = nil,
+        skipCertVerify: Bool = false,
+        flow: String? = nil,
+        clientFingerprint: String? = nil,
+        realityPublicKey: String? = nil,
+        realityShortId: String? = nil
+    ) {
         self.name = name
         self.type = type
+        self.server = server
+        self.port = port
+        self.uuid = uuid
+        self.cipher = cipher
+        self.alterId = alterId
+        self.network = network
+        self.tls = tls
+        self.servername = servername
+        self.alpn = alpn
+        self.skipCertVerify = skipCertVerify
+        self.flow = flow
+        self.clientFingerprint = clientFingerprint
+        self.realityPublicKey = realityPublicKey
+        self.realityShortId = realityShortId
     }
 }
 
@@ -212,7 +257,31 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
             guard let name = entry["name"] as? String, !name.isEmpty else {
                 return nil
             }
-            return SwiftCoreProxy(name: name, type: (entry["type"] as? String) ?? "unknown")
+            let reality = entry["reality-opts"] as? [String: Any]
+            let shortId: String?
+            switch reality?["short-id"] {
+            case let value as String: shortId = value
+            case let value as Int: shortId = String(value)
+            default: shortId = nil
+            }
+            return SwiftCoreProxy(
+                name: name,
+                type: (entry["type"] as? String) ?? "unknown",
+                server: entry["server"] as? String,
+                port: entry["port"] as? Int,
+                uuid: entry["uuid"] as? String,
+                cipher: (entry["cipher"] as? String) ?? (entry["security"] as? String),
+                alterId: (entry["alterId"] as? Int) ?? (entry["alterid"] as? Int),
+                network: entry["network"] as? String,
+                tls: (entry["tls"] as? Bool) ?? false,
+                servername: (entry["servername"] as? String) ?? (entry["sni"] as? String),
+                alpn: entry["alpn"] as? [String],
+                skipCertVerify: (entry["skip-cert-verify"] as? Bool) ?? false,
+                flow: entry["flow"] as? String,
+                clientFingerprint: entry["client-fingerprint"] as? String,
+                realityPublicKey: reality?["public-key"] as? String,
+                realityShortId: shortId
+            )
         }
     }
 

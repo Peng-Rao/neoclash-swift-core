@@ -188,9 +188,11 @@ final class SwiftCoreMixedProxyHandler: ChannelInboundHandler, @unchecked Sendab
     ) {
         let decision = state.route(host: target.host)
         let chain: [String]
+        let outbound: SwiftCoreOutbound
         switch decision {
-        case .direct(let routeChain):
+        case .outbound(let routeChain, let adapter):
             chain = routeChain
+            outbound = adapter
         case .reject:
             state.appendLog(level: "info", message: "Rejected \(protocolName) connection to \(target.host):\(target.port)")
             if let failure = clientFailureBytes {
@@ -212,49 +214,47 @@ final class SwiftCoreMixedProxyHandler: ChannelInboundHandler, @unchecked Sendab
         let clientEventLoop = context.eventLoop
         clientChannel.setOption(ChannelOptions.autoRead, value: false).whenComplete { _ in }
 
-        ClientBootstrap(group: group)
-            .channelOption(.socketOption(.so_reuseaddr), value: 1)
-            .channelInitializer { [state, connectionIDRef] upstreamChannel in
-                upstreamChannel.pipeline.addHandler(SwiftCoreUpstreamHandler(
-                    client: clientChannel,
-                    state: state,
-                    connectionIDRef: connectionIDRef
-                ))
-            }
-            .connect(host: target.host, port: target.port)
-            .whenComplete { [weak self] result in
-                guard let self else { return }
-                clientEventLoop.execute {
-                    switch result {
-                    case .success(let upstream):
-                        self.upstream = upstream
-                        let id = self.state.addConnection(
-                            host: "\(target.host):\(target.port)",
-                            rule: "DIRECT",
-                            chain: chain
-                        )
-                        self.connectionID = id
-                        self.connectionIDRef.value = id
-                        self.mode = .tunneled
-                        if let success = clientSuccessBytes {
-                            clientChannel.writeAndFlush(success, promise: nil)
-                        }
-                        if let initial = initialUpstreamBytes {
-                            let bytes = initial.readableBytes
-                            self.state.recordUpload(id: self.connectionID, bytes: bytes)
-                            upstream.writeAndFlush(initial, promise: nil)
-                        }
-                        clientChannel.setOption(ChannelOptions.autoRead, value: true).whenComplete { _ in }
-                    case .failure(let error):
-                        self.state.appendLog(level: "warning", message: "Failed to connect \(target.host):\(target.port): \(error.localizedDescription)")
-                        if let failure = clientFailureBytes {
-                            clientChannel.writeAndFlush(failure, promise: nil)
-                        }
-                        self.mode = .closed
-                        clientChannel.close(promise: nil)
+        let request = SwiftCoreOutboundRequest(host: target.host, port: target.port)
+        outbound.connect(request: request, group: group) { [state, connectionIDRef, clientChannel] in
+            SwiftCoreUpstreamHandler(
+                client: clientChannel,
+                state: state,
+                connectionIDRef: connectionIDRef
+            )
+        }
+        .whenComplete { [weak self] result in
+            guard let self else { return }
+            clientEventLoop.execute {
+                switch result {
+                case .success(let upstream):
+                    self.upstream = upstream
+                    let id = self.state.addConnection(
+                        host: "\(target.host):\(target.port)",
+                        rule: outbound.name,
+                        chain: chain
+                    )
+                    self.connectionID = id
+                    self.connectionIDRef.value = id
+                    self.mode = .tunneled
+                    if let success = clientSuccessBytes {
+                        clientChannel.writeAndFlush(success, promise: nil)
                     }
+                    if let initial = initialUpstreamBytes {
+                        let bytes = initial.readableBytes
+                        self.state.recordUpload(id: self.connectionID, bytes: bytes)
+                        upstream.writeAndFlush(initial, promise: nil)
+                    }
+                    clientChannel.setOption(ChannelOptions.autoRead, value: true).whenComplete { _ in }
+                case .failure(let error):
+                    self.state.appendLog(level: "warning", message: "Failed to connect \(target.host):\(target.port) via \(outbound.name): \(error.localizedDescription)")
+                    if let failure = clientFailureBytes {
+                        clientChannel.writeAndFlush(failure, promise: nil)
+                    }
+                    self.mode = .closed
+                    clientChannel.close(promise: nil)
                 }
             }
+        }
     }
 
     private func parseSocksRequest(buffer: inout ByteBuffer) -> SwiftCoreProxyTarget? {

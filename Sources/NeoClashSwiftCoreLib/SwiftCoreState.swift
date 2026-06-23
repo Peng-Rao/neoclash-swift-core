@@ -1,7 +1,7 @@
 import Foundation
 
-public enum SwiftCoreRouteDecision: Equatable, Sendable {
-    case direct(chain: [String])
+public enum SwiftCoreRouteDecision: Sendable {
+    case outbound(chain: [String], outbound: SwiftCoreOutbound)
     case reject(chain: [String])
     case unsupported(chain: [String], proxy: String)
 }
@@ -32,13 +32,37 @@ public final class SwiftCoreState: @unchecked Sendable {
     private var pendingUploadBytes = 0
     private var pendingDownloadBytes = 0
     private var logs: [[String: String]] = []
+    private let directOutbound: SwiftCoreOutbound = SwiftCoreDirectOutbound()
+    private var outbounds: [String: SwiftCoreOutbound]
 
     public init(configuration: SwiftCoreConfiguration) {
         self.configuration = configuration
         self.selections = Dictionary(uniqueKeysWithValues: configuration.proxyGroups.map { group in
             (group.name, group.proxies.first ?? "DIRECT")
         })
+        let (built, warnings) = Self.makeOutbounds(configuration)
+        self.outbounds = built
         appendLog(level: "info", message: "NeoClash Swift core initialized")
+        for warning in warnings {
+            appendLog(level: "warning", message: warning)
+        }
+    }
+
+    private static func makeOutbounds(_ configuration: SwiftCoreConfiguration) -> ([String: SwiftCoreOutbound], [String]) {
+        var result: [String: SwiftCoreOutbound] = [:]
+        var warnings: [String] = []
+        for proxy in configuration.proxies {
+            do {
+                if let outbound = try SwiftCoreOutboundFactory.make(proxy: proxy) {
+                    result[proxy.name] = outbound
+                } else {
+                    warnings.append("Proxy \(proxy.name) of type \(proxy.type) is not supported yet; routes using it will be rejected.")
+                }
+            } catch {
+                warnings.append("Proxy \(proxy.name) is invalid: \(error.localizedDescription)")
+            }
+        }
+        return (result, warnings)
     }
 
     public var secret: String {
@@ -62,6 +86,7 @@ public final class SwiftCoreState: @unchecked Sendable {
     }
 
     public func replaceConfiguration(_ configuration: SwiftCoreConfiguration) {
+        let (built, warnings) = Self.makeOutbounds(configuration)
         withLock {
             self.configuration = configuration
             var nextSelections: [String: String] = [:]
@@ -73,8 +98,12 @@ public final class SwiftCoreState: @unchecked Sendable {
                 }
             }
             selections = nextSelections
+            outbounds = built
         }
         appendLog(level: "info", message: "Reloaded Swift core configuration")
+        for warning in warnings {
+            appendLog(level: "warning", message: warning)
+        }
     }
 
     public func isAuthorized(headers: [String: String]) -> Bool {
@@ -225,17 +254,15 @@ public final class SwiftCoreState: @unchecked Sendable {
         withLock {
             switch configuration.mode.lowercased() {
             case "direct":
-                return .direct(chain: ["DIRECT"])
+                return .outbound(chain: ["DIRECT"], outbound: directOutbound)
             case "global":
                 let proxy = configuration.proxyGroups.first.flatMap { selections[$0.name] } ?? "DIRECT"
                 return resolve(proxy: proxy, chain: [proxy])
             default:
-                for rule in configuration.rules {
-                    if matches(rule: rule, host: host) {
-                        return resolve(proxy: rule.proxy, chain: [rule.proxy])
-                    }
+                for rule in configuration.rules where matches(rule: rule, host: host) {
+                    return resolve(proxy: rule.proxy, chain: [rule.proxy])
                 }
-                return .direct(chain: ["DIRECT"])
+                return .outbound(chain: ["DIRECT"], outbound: directOutbound)
             }
         }
     }
@@ -255,20 +282,20 @@ public final class SwiftCoreState: @unchecked Sendable {
     private func resolve(proxy: String, chain: [String]) -> SwiftCoreRouteDecision {
         let normalized = proxy.uppercased()
         if normalized == "DIRECT" {
-            return .direct(chain: chain.isEmpty ? ["DIRECT"] : chain)
+            return .outbound(chain: chain.isEmpty ? ["DIRECT"] : chain, outbound: directOutbound)
         }
         if normalized == "REJECT" {
             return .reject(chain: chain.isEmpty ? ["REJECT"] : chain)
         }
         if let group = configuration.proxyGroups.first(where: { $0.name == proxy }) {
             let selected = selections[group.name] ?? group.proxies.first ?? "DIRECT"
+            if selected == proxy {
+                return .unsupported(chain: chain, proxy: proxy)
+            }
             return resolve(proxy: selected, chain: chain + [selected])
         }
-        if let configured = configuration.proxies.first(where: { $0.name == proxy }) {
-            if configured.type.lowercased() == "direct" {
-                return .direct(chain: chain)
-            }
-            return .unsupported(chain: chain, proxy: configured.name)
+        if let outbound = outbounds[proxy] {
+            return .outbound(chain: chain.isEmpty ? [proxy] : chain, outbound: outbound)
         }
         return .unsupported(chain: chain, proxy: proxy)
     }
