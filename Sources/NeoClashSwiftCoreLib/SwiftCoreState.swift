@@ -49,6 +49,11 @@ public final class SwiftCoreState: @unchecked Sendable {
         for warning in warnings {
             appendLog(level: "warning", message: warning)
         }
+        let unsupportedRules = Set(configuration.rules.map { $0.type.uppercased() })
+            .subtracting(SwiftCoreRuleMatcher.supportedTypes)
+        for type in unsupportedRules.sorted() {
+            appendLog(level: "warning", message: "Rule type \(type) is not evaluated yet; such rules are skipped.")
+        }
     }
 
     private static func makeOutbounds(_ configuration: SwiftCoreConfiguration) -> ([String: SwiftCoreOutbound], [String]) {
@@ -266,16 +271,20 @@ public final class SwiftCoreState: @unchecked Sendable {
     }
 
     public func route(host: String) -> SwiftCoreRouteDecision {
+        route(context: SwiftCoreRouteContext(host: host, destinationPort: 0, sourcePort: nil))
+    }
+
+    public func route(context routeContext: SwiftCoreRouteContext) -> SwiftCoreRouteDecision {
         withLock {
             switch configuration.mode.lowercased() {
             case "direct":
                 return .outbound(chain: ["DIRECT"], outbound: directOutbound)
             case "global":
                 let proxy = configuration.proxyGroups.first?.name ?? "DIRECT"
-                return resolve(proxy: proxy, host: host, chain: [proxy])
+                return resolve(proxy: proxy, host: routeContext.host, chain: [proxy])
             default:
-                for rule in configuration.rules where matches(rule: rule, host: host) {
-                    return resolve(proxy: rule.proxy, host: host, chain: [rule.proxy])
+                for rule in configuration.rules where SwiftCoreRuleMatcher.matches(rule: rule, context: routeContext) {
+                    return resolve(proxy: rule.proxy, host: routeContext.host, chain: [rule.proxy])
                 }
                 return .outbound(chain: ["DIRECT"], outbound: directOutbound)
             }
@@ -416,21 +425,6 @@ public final class SwiftCoreState: @unchecked Sendable {
             hash = hash &* 1_099_511_628_211
         }
         return hash
-    }
-
-    private func matches(rule: SwiftCoreRule, host: String) -> Bool {
-        let normalizedHost = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]")).lowercased()
-        switch rule.type.uppercased() {
-        case "MATCH":
-            return true
-        case "DOMAIN":
-            return normalizedHost == rule.payload.lowercased()
-        case "DOMAIN-SUFFIX":
-            let payload = rule.payload.lowercased()
-            return normalizedHost == payload || normalizedHost.hasSuffix("." + payload)
-        default:
-            return false
-        }
     }
 
     private static func connectionObject(_ connection: SwiftCoreConnectionSnapshot) -> [String: Any] {

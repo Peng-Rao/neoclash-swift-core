@@ -186,7 +186,12 @@ final class SwiftCoreMixedProxyHandler: ChannelInboundHandler, @unchecked Sendab
         clientSuccessBytes: ByteBuffer?,
         clientFailureBytes: ByteBuffer?
     ) {
-        let decision = state.route(host: target.host)
+        let routeContext = SwiftCoreRouteContext(
+            host: target.host,
+            destinationPort: target.port,
+            sourcePort: context.channel.remoteAddress?.port
+        )
+        let decision = state.route(context: routeContext)
         let chain: [String]
         let outbound: SwiftCoreOutbound
         switch decision {
