@@ -48,6 +48,7 @@ final class SwiftCoreTLS13ClientHandler: ChannelDuplexHandler, @unchecked Sendab
     private var transcript: [UInt8] = []
     private var keySchedule: SwiftCoreTLS13KeySchedule?
     private var suite: SwiftCoreTLS13CipherSuite?
+    private var negotiatedHash: SwiftCoreTLS13Hash = .sha256
 
     private var clientHandshakeSecret: [UInt8] = []
     private var serverHandshakeSecret: [UInt8] = []
@@ -253,13 +254,14 @@ final class SwiftCoreTLS13ClientHandler: ChannelDuplexHandler, @unchecked Sendab
         transcript.append(contentsOf: fullMessage)
         let serverHello = try SwiftCoreServerHello(body: body)
         self.suite = serverHello.cipherSuite
+        self.negotiatedHash = serverHello.cipherSuite.hash
 
         let serverKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: Data(serverHello.serverPublicKey))
         let shared = try clientHello.privateKey.sharedSecretFromKeyAgreement(with: serverKey)
         let ecdhe = shared.withUnsafeBytes { Array($0) }
 
-        let schedule = SwiftCoreTLS13KeySchedule(ecdheSharedSecret: ecdhe)
-        let transcriptHash = SwiftCoreTLS13.transcriptHash(transcript)
+        let schedule = SwiftCoreTLS13KeySchedule(ecdheSharedSecret: ecdhe, hash: negotiatedHash)
+        let transcriptHash = SwiftCoreTLS13.transcriptHash(transcript, hash: negotiatedHash)
         let serverSecret = schedule.serverHandshakeTrafficSecret(transcriptHash: transcriptHash)
         let clientSecret = schedule.clientHandshakeTrafficSecret(transcriptHash: transcriptHash)
 
@@ -282,19 +284,19 @@ final class SwiftCoreTLS13ClientHandler: ChannelDuplexHandler, @unchecked Sendab
         }
 
         // server Finished is computed over the transcript up to (but excluding) itself.
-        let transcriptBeforeFinished = SwiftCoreTLS13.transcriptHash(transcript)
-        let serverFinishedKey = SwiftCoreTLS13.finishedKey(baseKey: serverHandshakeSecret)
-        let expected = SwiftCoreTLS13.hmac(key: serverFinishedKey, message: transcriptBeforeFinished)
+        let transcriptBeforeFinished = SwiftCoreTLS13.transcriptHash(transcript, hash: negotiatedHash)
+        let serverFinishedKey = SwiftCoreTLS13.finishedKey(baseKey: serverHandshakeSecret, hash: negotiatedHash)
+        let expected = SwiftCoreTLS13.hmac(key: serverFinishedKey, message: transcriptBeforeFinished, hash: negotiatedHash)
         guard expected == verifyData else {
             throw SwiftCoreTLSError.handshakeFailed("Server Finished verify_data mismatch.")
         }
 
         transcript.append(contentsOf: fullMessage)
-        let transcriptAfterFinished = SwiftCoreTLS13.transcriptHash(transcript)
+        let transcriptAfterFinished = SwiftCoreTLS13.transcriptHash(transcript, hash: negotiatedHash)
 
         // Client Finished over the transcript through the server Finished.
-        let clientFinishedKey = SwiftCoreTLS13.finishedKey(baseKey: clientHandshakeSecret)
-        let clientVerifyData = SwiftCoreTLS13.hmac(key: clientFinishedKey, message: transcriptAfterFinished)
+        let clientFinishedKey = SwiftCoreTLS13.finishedKey(baseKey: clientHandshakeSecret, hash: negotiatedHash)
+        let clientVerifyData = SwiftCoreTLS13.hmac(key: clientFinishedKey, message: transcriptAfterFinished, hash: negotiatedHash)
         let clientFinished = SwiftCoreTLSMessage.handshake(type: .finished, body: clientVerifyData)
         var innerFinished = clientFinished
         innerFinished.append(SwiftCoreTLSRecordType.handshake.rawValue)

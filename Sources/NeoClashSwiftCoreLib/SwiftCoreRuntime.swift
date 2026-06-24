@@ -33,6 +33,7 @@ public final class SwiftCoreRuntimeSession: @unchecked Sendable {
     private let group: MultiThreadedEventLoopGroup
     private var controller: Channel?
     private var mixed: Channel?
+    private var healthMonitor: SwiftCoreHealthMonitor?
     private var stopped = false
 
     public init(configuration: SwiftCoreConfiguration, numberOfThreads: Int = max(2, System.coreCount)) {
@@ -48,6 +49,9 @@ public final class SwiftCoreRuntimeSession: @unchecked Sendable {
         do {
             controller = try SwiftCoreControllerServer(state: state, group: group).start()
             mixed = try SwiftCoreMixedProxyServer(state: state, group: group).start()
+            let monitor = SwiftCoreHealthMonitor(state: state, group: group)
+            monitor.start()
+            healthMonitor = monitor
         } catch {
             stop()
             throw error
@@ -66,6 +70,8 @@ public final class SwiftCoreRuntimeSession: @unchecked Sendable {
             return
         }
         stopped = true
+        healthMonitor?.stop()
+        healthMonitor = nil
         try? controller?.close().wait()
         try? mixed?.close().wait()
         try? group.syncShutdownGracefully()

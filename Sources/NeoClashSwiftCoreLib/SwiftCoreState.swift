@@ -1,4 +1,5 @@
 import Foundation
+import NIOCore
 
 public enum SwiftCoreRouteDecision: Sendable {
     case outbound(chain: [String], outbound: SwiftCoreOutbound)
@@ -34,6 +35,8 @@ public final class SwiftCoreState: @unchecked Sendable {
     private var logs: [[String: String]] = []
     private let directOutbound: SwiftCoreOutbound = SwiftCoreDirectOutbound()
     private var outbounds: [String: SwiftCoreOutbound]
+    private var delays: [String: Int] = [:]            // proxy name -> last successful delay (ms)
+    private var loadBalanceCounters: [String: Int] = [:]
 
     public init(configuration: SwiftCoreConfiguration) {
         self.configuration = configuration
@@ -107,6 +110,10 @@ public final class SwiftCoreState: @unchecked Sendable {
     }
 
     public func isAuthorized(headers: [String: String]) -> Bool {
+        let secret = self.secret
+        if secret.isEmpty {
+            return true // no secret configured → authentication disabled (mihomo behavior)
+        }
         let auth = headers.first { $0.key.caseInsensitiveCompare("authorization") == .orderedSame }?.value
         return auth == "Bearer \(secret)"
     }
@@ -130,23 +137,31 @@ public final class SwiftCoreState: @unchecked Sendable {
 
     public func proxiesObject() -> [String: Any] {
         withLock {
+            func history(_ name: String) -> [[String: Int]] {
+                guard let delay = delays[name] else { return [] }
+                return [["delay": delay]]
+            }
+
             var proxies: [String: [String: Any]] = [
-                "DIRECT": ["type": "Direct", "delay": 0],
-                "REJECT": ["type": "Reject", "delay": 0]
+                "DIRECT": ["type": "Direct", "name": "DIRECT", "history": [["delay": 0]]],
+                "REJECT": ["type": "Reject", "name": "REJECT", "history": []]
             ]
 
             for proxy in configuration.proxies {
                 proxies[proxy.name] = [
                     "type": proxy.type,
-                    "delay": NSNull()
+                    "name": proxy.name,
+                    "history": history(proxy.name)
                 ]
             }
 
             for group in configuration.proxyGroups {
                 proxies[group.name] = [
                     "type": group.type,
+                    "name": group.name,
                     "all": group.proxies,
-                    "now": selections[group.name] ?? group.proxies.first ?? "DIRECT"
+                    "now": chooseMember(group: group, host: ""),
+                    "history": []
                 ]
             }
 
@@ -256,15 +271,62 @@ public final class SwiftCoreState: @unchecked Sendable {
             case "direct":
                 return .outbound(chain: ["DIRECT"], outbound: directOutbound)
             case "global":
-                let proxy = configuration.proxyGroups.first.flatMap { selections[$0.name] } ?? "DIRECT"
-                return resolve(proxy: proxy, chain: [proxy])
+                let proxy = configuration.proxyGroups.first?.name ?? "DIRECT"
+                return resolve(proxy: proxy, host: host, chain: [proxy])
             default:
                 for rule in configuration.rules where matches(rule: rule, host: host) {
-                    return resolve(proxy: rule.proxy, chain: [rule.proxy])
+                    return resolve(proxy: rule.proxy, host: host, chain: [rule.proxy])
                 }
                 return .outbound(chain: ["DIRECT"], outbound: directOutbound)
             }
         }
+    }
+
+    // MARK: Health checks / delays (lock-free public API uses withLock internally)
+
+    public func recordDelay(name: String, delay: Int) {
+        withLock { delays[name] = delay }
+        appendLog(level: "info", message: "\(name) delay \(delay)ms")
+    }
+
+    public func recordFailure(name: String) {
+        withLock { delays[name] = nil }
+    }
+
+    public func delay(for name: String) -> Int? {
+        withLock { delays[name] }
+    }
+
+    /// Proxies (not groups, not DIRECT/REJECT) that the periodic monitor should test.
+    public func outboundsToHealthCheck() -> [(name: String, outbound: SwiftCoreOutbound)] {
+        withLock { configuration.proxies.compactMap { proxy in
+            outbounds[proxy.name].map { (proxy.name, $0) }
+        } }
+    }
+
+    /// Resolves a proxy/group name to the concrete adapter to dial (for on-demand delay testing).
+    public func outbound(named name: String) -> SwiftCoreOutbound? {
+        withLock { memberOutbound(name: name, host: "", depth: 0) }
+    }
+
+    /// Tests one proxy/group's latency, recording the result so groups and `/proxies` reflect it.
+    public func measureDelay(name: String, url: String, timeoutMilliseconds: Int, on eventLoop: EventLoop) -> EventLoopFuture<Int> {
+        let upper = name.uppercased()
+        guard upper != "REJECT" else {
+            return eventLoop.makeFailedFuture(SwiftCoreError.invalidConfig("REJECT has no delay"))
+        }
+        guard let outbound = outbound(named: name) else {
+            return eventLoop.makeFailedFuture(SwiftCoreError.invalidConfig("proxy \(name) not found"))
+        }
+        return SwiftCoreHealthProbe.measure(outbound: outbound, on: eventLoop, url: url, timeoutMilliseconds: timeoutMilliseconds)
+            .always { [weak self] result in
+                switch result {
+                case .success(let milliseconds):
+                    self?.recordDelay(name: name, delay: milliseconds)
+                case .failure:
+                    self?.recordFailure(name: name)
+                }
+            }
     }
 
     private func recordTraffic(id: String?, upload: Int, download: Int) {
@@ -279,7 +341,7 @@ public final class SwiftCoreState: @unchecked Sendable {
         }
     }
 
-    private func resolve(proxy: String, chain: [String]) -> SwiftCoreRouteDecision {
+    private func resolve(proxy: String, host: String, chain: [String]) -> SwiftCoreRouteDecision {
         let normalized = proxy.uppercased()
         if normalized == "DIRECT" {
             return .outbound(chain: chain.isEmpty ? ["DIRECT"] : chain, outbound: directOutbound)
@@ -288,16 +350,72 @@ public final class SwiftCoreState: @unchecked Sendable {
             return .reject(chain: chain.isEmpty ? ["REJECT"] : chain)
         }
         if let group = configuration.proxyGroups.first(where: { $0.name == proxy }) {
-            let selected = selections[group.name] ?? group.proxies.first ?? "DIRECT"
+            let selected = chooseMember(group: group, host: host)
             if selected == proxy {
                 return .unsupported(chain: chain, proxy: proxy)
             }
-            return resolve(proxy: selected, chain: chain + [selected])
+            return resolve(proxy: selected, host: host, chain: chain + [selected])
         }
         if let outbound = outbounds[proxy] {
             return .outbound(chain: chain.isEmpty ? [proxy] : chain, outbound: outbound)
         }
         return .unsupported(chain: chain, proxy: proxy)
+    }
+
+    /// Chooses a group member according to its type. Must be called while holding `lock`.
+    private func chooseMember(group: SwiftCoreProxyGroup, host: String) -> String {
+        let members = group.proxies.isEmpty ? ["DIRECT"] : group.proxies
+        switch group.type.lowercased() {
+        case "url-test", "urltest":
+            let alive = members.filter { isAlive($0) }
+            return alive.min { (delays[$0] ?? Int.max) < (delays[$1] ?? Int.max) } ?? members[0]
+        case "fallback":
+            return members.first { isAlive($0) } ?? members[0]
+        case "load-balance", "loadbalance":
+            let alive = members.filter { isAlive($0) }
+            let pool = alive.isEmpty ? members : alive
+            let index = Self.stableHash(host) % UInt64(pool.count)
+            return pool[Int(index)]
+        default: // select
+            if let selected = selections[group.name], members.contains(selected) {
+                return selected
+            }
+            return members[0]
+        }
+    }
+
+    /// A member is considered alive if it can carry traffic: DIRECT always, a proxy with a recorded
+    /// delay, or a nested group (assumed resolvable). REJECT is never alive.
+    private func isAlive(_ name: String) -> Bool {
+        let upper = name.uppercased()
+        if upper == "DIRECT" { return true }
+        if upper == "REJECT" { return false }
+        if configuration.proxyGroups.contains(where: { $0.name == name }) { return true }
+        return delays[name] != nil
+    }
+
+    /// Resolves a name to a concrete adapter (DIRECT or a proxy), following groups. Holds `lock`.
+    private func memberOutbound(name: String, host: String, depth: Int) -> SwiftCoreOutbound? {
+        guard depth < 16 else { return nil }
+        let upper = name.uppercased()
+        if upper == "DIRECT" { return directOutbound }
+        if upper == "REJECT" { return nil }
+        if let group = configuration.proxyGroups.first(where: { $0.name == name }) {
+            let member = chooseMember(group: group, host: host)
+            if member == name { return nil }
+            return memberOutbound(name: member, host: host, depth: depth + 1)
+        }
+        return outbounds[name]
+    }
+
+    /// A deterministic FNV-1a hash so load-balance keeps a host pinned to one member within a run.
+    private static func stableHash(_ value: String) -> UInt64 {
+        var hash: UInt64 = 1_469_598_103_934_665_603
+        for byte in value.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 1_099_511_628_211
+        }
+        return hash
     }
 
     private func matches(rule: SwiftCoreRule, host: String) -> Bool {

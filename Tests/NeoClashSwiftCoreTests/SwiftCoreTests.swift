@@ -159,6 +159,29 @@ final class SwiftCoreTests: XCTestCase {
         XCTAssertTrue(response.contains("swift-core-ok /vless"), response)
     }
 
+    func testDelayEndpointMeasuresDirect() async throws {
+        let mixedPort = try Self.unusedTCPPort()
+        let controllerPort = try Self.unusedTCPPort(excluding: [mixedPort])
+        let originPort = try Self.unusedTCPPort(excluding: [mixedPort, controllerPort])
+
+        let origin = TinyHTTPServer(port: originPort)
+        try origin.start()
+        defer { origin.stop() }
+
+        let configuration = try SwiftCoreConfiguration.parse(yaml: Self.sampleYAML(mixedPort: mixedPort, controllerPort: controllerPort))
+        let runtime = SwiftCoreRuntimeSession(configuration: configuration)
+        try runtime.start()
+        defer { runtime.stop() }
+
+        let response = try await controllerJSON(
+            path: "/proxies/DIRECT/delay?url=http://127.0.0.1:\(originPort)/generate_204&timeout=3000",
+            port: controllerPort
+        )
+        let delay = try XCTUnwrap(response["delay"] as? Int)
+        XCTAssertGreaterThanOrEqual(delay, 0)
+        XCTAssertLessThan(delay, 3000)
+    }
+
     private static func sampleYAML(mixedPort: Int = 17897, controllerPort: Int = 19097) -> String {
         """
         mixed-port: \(mixedPort)

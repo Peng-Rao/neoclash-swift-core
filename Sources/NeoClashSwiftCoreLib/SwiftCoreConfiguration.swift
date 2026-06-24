@@ -203,10 +203,8 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
 
         let mixedPort = try intValue(root["mixed-port"], key: "mixed-port")
         let (controllerHost, controllerPort) = try parseController(root["external-controller"])
-        guard let secret = root["secret"] as? String,
-              !secret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw SwiftCoreError.invalidConfig("secret must be present.")
-        }
+        // `secret` is optional; an empty secret disables controller authentication (mihomo behavior).
+        let secret = (root["secret"] as? String) ?? ""
 
         let proxies = parseProxies(root["proxies"])
         var groups = parseProxyGroups(root["proxy-groups"])
@@ -237,8 +235,11 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
     }
 
     private static func parseController(_ value: Any?) throws -> (String, Int) {
-        guard let controller = value as? String,
-              let separator = controller.lastIndex(of: ":") else {
+        // `external-controller` is optional; default to a local controller when absent.
+        guard let controller = value as? String, !controller.isEmpty else {
+            return ("127.0.0.1", 9090)
+        }
+        guard let separator = controller.lastIndex(of: ":") else {
             throw SwiftCoreError.invalidConfig("external-controller must be host:port.")
         }
         let host = String(controller[..<separator])

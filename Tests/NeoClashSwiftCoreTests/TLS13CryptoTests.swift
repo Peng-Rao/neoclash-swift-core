@@ -60,9 +60,23 @@ final class TLS13CryptoTests: XCTestCase {
         XCTAssertEqual(keys.nonce(sequenceNumber: 5), expected)
     }
 
-    // Record AEAD round trip with the TLS 1.3 record additional data, for both suites.
+    // SHA-384 suite: the key schedule and record keys must use 48-byte secrets / AES-256 keys.
+    func testSHA384KeyScheduleAndRecordKeys() throws {
+        let schedule = SwiftCoreTLS13KeySchedule(ecdheSharedSecret: [UInt8](repeating: 0x2a, count: 32), hash: .sha384)
+        XCTAssertEqual(schedule.earlySecret.count, 48)
+        XCTAssertEqual(schedule.handshakeSecret.count, 48)
+        XCTAssertEqual(schedule.masterSecret.count, 48)
+
+        let secret = schedule.serverApplicationTrafficSecret(transcriptHash: SwiftCoreTLS13.transcriptHash([0x01], hash: .sha384))
+        XCTAssertEqual(secret.count, 48)
+        let keys = SwiftCoreTLS13RecordKeys(suite: .aes256GCMSHA384, trafficSecret: secret)
+        XCTAssertEqual(keys.key.count, 32) // AES-256
+        XCTAssertEqual(keys.iv.count, 12)
+    }
+
+    // Record AEAD round trip with the TLS 1.3 record additional data, for all three suites.
     func testRecordAEADRoundTrip() throws {
-        for suite in [SwiftCoreTLS13CipherSuite.aes128GCMSHA256, .chacha20Poly1305SHA256] {
+        for suite in [SwiftCoreTLS13CipherSuite.aes128GCMSHA256, .aes256GCMSHA384, .chacha20Poly1305SHA256] {
             let keys = SwiftCoreTLS13RecordKeys(suite: suite, trafficSecret: [UInt8](repeating: 0x42, count: 32))
             let plaintext = Array("application data record contents".utf8)
             let recordLength = plaintext.count + 16

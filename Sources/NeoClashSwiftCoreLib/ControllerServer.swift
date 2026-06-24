@@ -122,15 +122,8 @@ final class SwiftCoreHTTPControllerHandler: ChannelInboundHandler, RemovableChan
             case (.GET, "/proxies"):
                 send(status: .ok, object: state.proxiesObject(), context: context)
             case (.GET, let delayPath) where delayPath.hasPrefix("/proxies/") && delayPath.hasSuffix("/delay"):
-                let name = delayPath
-                    .dropFirst("/proxies/".count)
-                    .dropLast("/delay".count)
-                    .removingPercentEncoding ?? ""
-                if name.uppercased() == "DIRECT" || name.uppercased() == "REJECT" {
-                    send(status: .ok, object: ["delay": 0], context: context)
-                } else {
-                    send(status: .badGateway, object: ["error": "delay test is not implemented for \(name)"], context: context)
-                }
+                let name = String(delayPath.dropFirst("/proxies/".count).dropLast("/delay".count)).removingPercentEncoding ?? ""
+                handleDelay(name: name, context: context)
             case (.PUT, let groupPath) where groupPath.hasPrefix("/proxies/"):
                 let group = String(groupPath.dropFirst("/proxies/".count)).removingPercentEncoding ?? ""
                 let object = try bodyJSON()
@@ -155,6 +148,32 @@ final class SwiftCoreHTTPControllerHandler: ChannelInboundHandler, RemovableChan
         } catch {
             send(status: .badRequest, object: ["error": error.localizedDescription], context: context)
         }
+    }
+
+    /// Measures a proxy/group delay through its outbound adapter and replies once the probe finishes.
+    /// The probe tunnels a plaintext HTTP request, so the test URL must be `http://` (defaults to
+    /// `http://www.gstatic.com/generate_204`).
+    private func handleDelay(name: String, context: ChannelHandlerContext) {
+        var url = SwiftCoreHealthProbe.defaultTestURL
+        var timeout = 5000
+        if let components = URLComponents(string: head?.uri ?? ""), let items = components.queryItems {
+            for item in items {
+                if item.name == "url", let value = item.value, value.hasPrefix("http://") {
+                    url = value
+                } else if item.name == "timeout", let value = item.value, let parsed = Int(value) {
+                    timeout = parsed
+                }
+            }
+        }
+        state.measureDelay(name: name, url: url, timeoutMilliseconds: timeout, on: context.eventLoop)
+            .whenComplete { [weak self] result in
+                switch result {
+                case .success(let milliseconds):
+                    self?.send(status: .ok, object: ["delay": milliseconds], context: context)
+                case .failure:
+                    self?.send(status: .requestTimeout, object: ["message": "delay test failed for \(name)"], context: context)
+                }
+            }
     }
 
     private func bodyJSON() throws -> [String: Any] {

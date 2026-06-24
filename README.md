@@ -58,5 +58,15 @@ rules:
   - MATCH,DIRECT
 ```
 
+## Proxy groups
+
+`select`, `url-test` (lowest latency), `fallback` (first alive), and
+`load-balance` (consistent per-host) groups are supported. A periodic health
+monitor probes proxies, and `GET /proxies/{name}/delay` measures latency on
+demand (tunnels a plaintext HTTP request, so the test URL must be `http://`).
+
+`external-controller` and `secret` are optional — when `secret` is empty,
+controller authentication is disabled (mihomo behavior).
+
 WebSocket/gRPC transports, UDP relay, and additional protocols (Shadowsocks,
 Trojan, Hysteria2, WireGuard) are planned for later phases.

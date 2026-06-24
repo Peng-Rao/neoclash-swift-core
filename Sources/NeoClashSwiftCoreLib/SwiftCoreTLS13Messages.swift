@@ -118,8 +118,8 @@ struct SwiftCoreClientHello {
         body.append(UInt8(helloSessionId.count))       // session id length
         body.append(contentsOf: helloSessionId)        // session id (32)
 
-        // cipher_suites
-        body.append(contentsOf: [0x00, 0x04, 0x13, 0x01, 0x13, 0x03])
+        // cipher_suites: TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256
+        body.append(contentsOf: [0x00, 0x06, 0x13, 0x01, 0x13, 0x02, 0x13, 0x03])
         // legacy_compression_methods: null
         body.append(contentsOf: [0x01, 0x00])
 
