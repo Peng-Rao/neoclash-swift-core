@@ -1,5 +1,10 @@
 # NeoClash Swift Core
 
+[![CI](https://github.com/Peng-Rao/neoclash-swift-core/actions/workflows/ci.yml/badge.svg)](https://github.com/Peng-Rao/neoclash-swift-core/actions/workflows/ci.yml)
+[![Swift 6.2](https://img.shields.io/badge/Swift-6.2-F05138?logo=swift&logoColor=white)](https://swift.org)
+[![Platform](https://img.shields.io/badge/platform-macOS-lightgrey?logo=apple)](https://www.apple.com/macos/)
+[![SwiftPM](https://img.shields.io/badge/SwiftPM-compatible-brightgreen?logo=swift&logoColor=white)](https://www.swift.org/package-manager/)
+
 Experimental Swift sidecar core for NeoClash.
 
 This repository is intentionally small and package-first so the core can be
