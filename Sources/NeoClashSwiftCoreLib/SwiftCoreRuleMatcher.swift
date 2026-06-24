@@ -25,16 +25,23 @@ public struct SwiftCoreRouteContext: Sendable {
 enum SwiftCoreRuleMatcher {
     static let supportedTypes: Set<String> = [
         "MATCH", "FINAL", "DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "DOMAIN-REGEX",
-        "IP-CIDR", "IP-CIDR6", "DST-PORT", "SRC-PORT", "GEOIP", "GEOSITE"
+        "IP-CIDR", "IP-CIDR6", "DST-PORT", "SRC-PORT", "GEOIP", "GEOSITE", "RULE-SET"
     ]
 
-    static func matches(rule: SwiftCoreRule, context: SwiftCoreRouteContext, geo: SwiftCoreGeoDatabase? = nil) -> Bool {
+    static func matches(
+        rule: SwiftCoreRule,
+        context: SwiftCoreRouteContext,
+        geo: SwiftCoreGeoDatabase? = nil,
+        ruleSet: SwiftCoreRuleSet? = nil
+    ) -> Bool {
         let host = context.host.trimmingCharacters(in: CharacterSet(charactersIn: "[]")).lowercased()
         switch rule.type.uppercased() {
         case "GEOIP":
             return geo?.geoip?.matches(country: rule.payload, address: context.address) ?? false
         case "GEOSITE":
             return geo?.geosite?.matches(country: rule.payload, host: host) ?? false
+        case "RULE-SET":
+            return ruleSet?.matches(provider: rule.payload, context: context, geo: geo) ?? false
         case "MATCH", "FINAL":
             return true
         case "DOMAIN":

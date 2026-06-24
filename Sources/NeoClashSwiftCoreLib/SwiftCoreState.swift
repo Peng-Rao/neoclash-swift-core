@@ -38,6 +38,7 @@ public final class SwiftCoreState: @unchecked Sendable {
     private var delays: [String: Int] = [:]            // proxy name -> last successful delay (ms)
     private var loadBalanceCounters: [String: Int] = [:]
     private var geoDatabase: SwiftCoreGeoDatabase?
+    private var ruleSet: SwiftCoreRuleSet?
 
     public init(configuration: SwiftCoreConfiguration) {
         self.configuration = configuration
@@ -284,7 +285,7 @@ public final class SwiftCoreState: @unchecked Sendable {
                 let proxy = configuration.proxyGroups.first?.name ?? "DIRECT"
                 return resolve(proxy: proxy, host: routeContext.host, chain: [proxy])
             default:
-                for rule in configuration.rules where SwiftCoreRuleMatcher.matches(rule: rule, context: routeContext, geo: geoDatabase) {
+                for rule in configuration.rules where SwiftCoreRuleMatcher.matches(rule: rule, context: routeContext, geo: geoDatabase, ruleSet: ruleSet) {
                     return resolve(proxy: rule.proxy, host: routeContext.host, chain: [rule.proxy])
                 }
                 return .outbound(chain: ["DIRECT"], outbound: directOutbound)
@@ -311,6 +312,14 @@ public final class SwiftCoreState: @unchecked Sendable {
 
     public func setGeoDatabase(_ database: SwiftCoreGeoDatabase) {
         withLock { geoDatabase = database }
+    }
+
+    public func setRuleSet(_ newRuleSet: SwiftCoreRuleSet) {
+        withLock { ruleSet = newRuleSet }
+    }
+
+    public func ruleProviders() -> [SwiftCoreRuleProvider] {
+        withLock { configuration.ruleProviders }
     }
 
     public var geoipURL: String { withLock { configuration.geoipURL } }

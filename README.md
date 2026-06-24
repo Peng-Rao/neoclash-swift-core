@@ -68,10 +68,26 @@ rules:
 ## Routing rules
 
 Supported rule types: `MATCH`, `DOMAIN`, `DOMAIN-SUFFIX`, `DOMAIN-KEYWORD`,
-`DOMAIN-REGEX`, `IP-CIDR`, `IP-CIDR6`, `DST-PORT`, `SRC-PORT`, `GEOIP`, `GEOSITE`.
-IP rules match IP literals (domain→IP resolution for non-`no-resolve` rules
-arrives with the DNS subsystem). `PROCESS-NAME` and `RULE-SET` (rule providers)
-are not evaluated yet — such rules are skipped with a warning.
+`DOMAIN-REGEX`, `IP-CIDR`, `IP-CIDR6`, `DST-PORT`, `SRC-PORT`, `GEOIP`, `GEOSITE`,
+`RULE-SET`. IP rules match IP literals (domain→IP resolution for non-`no-resolve`
+rules arrives with the DNS subsystem). `PROCESS-NAME` is not evaluated yet —
+such rules are skipped with a warning.
+
+`RULE-SET` rules reference a `rule-providers` entry (`domain` / `ipcidr` /
+`classical` behavior, `yaml` or `text` format), loaded from a local file or an
+`http` URL (cached in the runtime directory):
+
+```yaml
+rule-providers:
+  cn-domains:
+    type: http
+    behavior: domain
+    url: https://example.com/cn.yaml
+    path: ./rules/cn.yaml
+rules:
+  - RULE-SET,cn-domains,DIRECT
+  - MATCH,Proxy
+```
 
 `GEOIP`/`GEOSITE` use the v2ray-format `geoip.dat` / `geosite.dat`, downloaded
 from `geox-url` (defaults to MetaCubeX's releases) into the runtime directory

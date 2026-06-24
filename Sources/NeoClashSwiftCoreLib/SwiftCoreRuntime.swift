@@ -36,6 +36,7 @@ public final class SwiftCoreRuntimeSession: @unchecked Sendable {
     private var mixed: Channel?
     private var healthMonitor: SwiftCoreHealthMonitor?
     private var geoLoader: SwiftCoreGeoLoader?
+    private var ruleProviderLoader: SwiftCoreRuleProviderLoader?
     private var stopped = false
 
     public init(configuration: SwiftCoreConfiguration, runtimeDirectory: String? = nil, numberOfThreads: Int = max(2, System.coreCount)) {
@@ -56,6 +57,7 @@ public final class SwiftCoreRuntimeSession: @unchecked Sendable {
             monitor.start()
             healthMonitor = monitor
             startGeoLoaderIfNeeded()
+            startRuleProviderLoaderIfNeeded()
         } catch {
             stop()
             throw error
@@ -76,6 +78,15 @@ public final class SwiftCoreRuntimeSession: @unchecked Sendable {
         )
         loader.start()
         geoLoader = loader
+    }
+
+    private func startRuleProviderLoaderIfNeeded() {
+        guard let runtimeDirectory else { return }
+        let providers = state.ruleProviders()
+        guard !providers.isEmpty else { return }
+        let loader = SwiftCoreRuleProviderLoader(state: state, directory: runtimeDirectory, providers: providers)
+        loader.start()
+        ruleProviderLoader = loader
     }
 
     public func wait() throws {
