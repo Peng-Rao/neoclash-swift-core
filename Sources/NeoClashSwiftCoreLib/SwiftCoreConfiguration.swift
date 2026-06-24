@@ -152,6 +152,24 @@ public struct SwiftCoreRule: Equatable, Sendable {
     }
 }
 
+public struct SwiftCoreRuleProvider: Equatable, Sendable {
+    public var name: String
+    public var type: String        // "http" or "file"
+    public var behavior: String    // "domain", "ipcidr", or "classical"
+    public var url: String?
+    public var path: String?
+    public var format: String      // "yaml" or "text"
+
+    public init(name: String, type: String, behavior: String, url: String? = nil, path: String? = nil, format: String = "yaml") {
+        self.name = name
+        self.type = type
+        self.behavior = behavior
+        self.url = url
+        self.path = path
+        self.format = format
+    }
+}
+
 public struct SwiftCoreConfiguration: Equatable, Sendable {
     public var mixedPort: Int
     public var controllerHost: String
@@ -163,6 +181,7 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
     public var proxies: [SwiftCoreProxy]
     public var proxyGroups: [SwiftCoreProxyGroup]
     public var rules: [SwiftCoreRule]
+    public var ruleProviders: [SwiftCoreRuleProvider]
     public var geoipURL: String
     public var geositeURL: String
 
@@ -180,6 +199,7 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
         proxies: [SwiftCoreProxy],
         proxyGroups: [SwiftCoreProxyGroup],
         rules: [SwiftCoreRule],
+        ruleProviders: [SwiftCoreRuleProvider] = [],
         geoipURL: String = SwiftCoreConfiguration.defaultGeoIPURL,
         geositeURL: String = SwiftCoreConfiguration.defaultGeoSiteURL
     ) {
@@ -193,6 +213,7 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
         self.proxies = proxies
         self.proxyGroups = proxyGroups
         self.rules = rules
+        self.ruleProviders = ruleProviders
         self.geoipURL = geoipURL
         self.geositeURL = geositeURL
     }
@@ -221,6 +242,7 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
             groups = [SwiftCoreProxyGroup(name: "Default", type: "select", proxies: ["DIRECT"])]
         }
         let rules = parseRules(root["rules"])
+        let ruleProviders = parseRuleProviders(root["rule-providers"])
         let geox = root["geox-url"] as? [String: Any]
 
         return SwiftCoreConfiguration(
@@ -234,9 +256,28 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
             proxies: proxies,
             proxyGroups: groups,
             rules: rules.isEmpty ? [SwiftCoreRule(type: "MATCH", payload: "", proxy: groups[0].name)] : rules,
+            ruleProviders: ruleProviders,
             geoipURL: (geox?["geoip"] as? String) ?? defaultGeoIPURL,
             geositeURL: (geox?["geosite"] as? String) ?? defaultGeoSiteURL
         )
+    }
+
+    private static func parseRuleProviders(_ value: Any?) -> [SwiftCoreRuleProvider] {
+        guard let entries = value as? [String: Any] else { return [] }
+        return entries.compactMap { name, raw in
+            guard let config = raw as? [String: Any],
+                  let behavior = config["behavior"] as? String else {
+                return nil
+            }
+            return SwiftCoreRuleProvider(
+                name: name,
+                type: (config["type"] as? String) ?? "http",
+                behavior: behavior,
+                url: config["url"] as? String,
+                path: config["path"] as? String,
+                format: (config["format"] as? String) ?? "yaml"
+            )
+        }
     }
 
     private static func intValue(_ value: Any?, key: String) throws -> Int {
