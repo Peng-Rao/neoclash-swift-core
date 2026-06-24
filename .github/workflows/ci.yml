@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: Build & Test
+    # The package declares `.macOS(.v26)`, so the test binary must run on macOS 26.
+    # If a macos-26 runner is unavailable on your plan, lower the deployment target
+    # in Package.swift or switch this to the newest available macOS image.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Build
+        run: swift build
+
+      - name: Test
+        run: swift test
