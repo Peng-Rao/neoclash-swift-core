@@ -16,7 +16,7 @@ public final class SwiftCoreRuntime {
             return
         }
 
-        let session = SwiftCoreRuntimeSession(configuration: configuration)
+        let session = SwiftCoreRuntimeSession(configuration: configuration, runtimeDirectory: command.runtimeDirectoryPath)
         try session.start()
         defer { session.stop() }
 
@@ -31,13 +31,17 @@ public final class SwiftCoreRuntime {
 public final class SwiftCoreRuntimeSession: @unchecked Sendable {
     public let state: SwiftCoreState
     private let group: MultiThreadedEventLoopGroup
+    private let runtimeDirectory: String?
     private var controller: Channel?
     private var mixed: Channel?
+    private var healthMonitor: SwiftCoreHealthMonitor?
+    private var geoLoader: SwiftCoreGeoLoader?
     private var stopped = false
 
-    public init(configuration: SwiftCoreConfiguration, numberOfThreads: Int = max(2, System.coreCount)) {
+    public init(configuration: SwiftCoreConfiguration, runtimeDirectory: String? = nil, numberOfThreads: Int = max(2, System.coreCount)) {
         self.state = SwiftCoreState(configuration: configuration)
         self.group = MultiThreadedEventLoopGroup(numberOfThreads: numberOfThreads)
+        self.runtimeDirectory = runtimeDirectory
     }
 
     deinit {
@@ -48,10 +52,30 @@ public final class SwiftCoreRuntimeSession: @unchecked Sendable {
         do {
             controller = try SwiftCoreControllerServer(state: state, group: group).start()
             mixed = try SwiftCoreMixedProxyServer(state: state, group: group).start()
+            let monitor = SwiftCoreHealthMonitor(state: state, group: group)
+            monitor.start()
+            healthMonitor = monitor
+            startGeoLoaderIfNeeded()
         } catch {
             stop()
             throw error
         }
+    }
+
+    private func startGeoLoaderIfNeeded() {
+        guard let runtimeDirectory else { return }
+        let required = state.requiresGeoData()
+        guard required.geoip || required.geosite else { return }
+        let loader = SwiftCoreGeoLoader(
+            state: state,
+            directory: runtimeDirectory,
+            geoipURL: state.geoipURL,
+            geositeURL: state.geositeURL,
+            needsGeoIP: required.geoip,
+            needsGeoSite: required.geosite
+        )
+        loader.start()
+        geoLoader = loader
     }
 
     public func wait() throws {
@@ -66,6 +90,8 @@ public final class SwiftCoreRuntimeSession: @unchecked Sendable {
             return
         }
         stopped = true
+        healthMonitor?.stop()
+        healthMonitor = nil
         try? controller?.close().wait()
         try? mixed?.close().wait()
         try? group.syncShutdownGracefully()

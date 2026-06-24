@@ -13,7 +13,9 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/jpsim/Yams.git", from: "6.0.0"),
-        .package(url: "https://github.com/apple/swift-nio.git", from: "2.83.0")
+        .package(url: "https://github.com/apple/swift-nio.git", from: "2.83.0"),
+        .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.25.0"),
+        .package(url: "https://github.com/apple/swift-crypto.git", from: "3.0.0")
     ],
     targets: [
         .target(
@@ -23,7 +25,9 @@ let package = Package(
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOHTTP1", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
-                .product(name: "NIOWebSocket", package: "swift-nio")
+                .product(name: "NIOWebSocket", package: "swift-nio"),
+                .product(name: "NIOSSL", package: "swift-nio-ssl"),
+                .product(name: "Crypto", package: "swift-crypto")
             ],
             path: "Sources/NeoClashSwiftCoreLib"
         ),
@@ -34,7 +38,13 @@ let package = Package(
         ),
         .testTarget(
             name: "NeoClashSwiftCoreTests",
-            dependencies: ["NeoClashSwiftCoreLib"],
+            dependencies: [
+                "NeoClashSwiftCoreLib",
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+                .product(name: "NIOEmbedded", package: "swift-nio"),
+                .product(name: "NIOSSL", package: "swift-nio-ssl")
+            ],
             path: "Tests/NeoClashSwiftCoreTests"
         )
     ]

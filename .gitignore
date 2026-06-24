@@ -5,3 +5,5 @@ DerivedData/
 *.xcworkspace/
 xcuserdata/
 .DS_Store
+config.yaml
+singbox.json

@@ -76,10 +76,55 @@ public struct SwiftCoreCommand: Equatable, Sendable {
 public struct SwiftCoreProxy: Equatable, Sendable {
     public var name: String
     public var type: String
+    public var server: String?
+    public var port: Int?
+    public var uuid: String?
+    public var cipher: String?
+    public var alterId: Int?
+    public var network: String?
+    public var tls: Bool
+    public var servername: String?
+    public var alpn: [String]?
+    public var skipCertVerify: Bool
+    public var flow: String?
+    public var clientFingerprint: String?
+    public var realityPublicKey: String?
+    public var realityShortId: String?
 
-    public init(name: String, type: String) {
+    public init(
+        name: String,
+        type: String,
+        server: String? = nil,
+        port: Int? = nil,
+        uuid: String? = nil,
+        cipher: String? = nil,
+        alterId: Int? = nil,
+        network: String? = nil,
+        tls: Bool = false,
+        servername: String? = nil,
+        alpn: [String]? = nil,
+        skipCertVerify: Bool = false,
+        flow: String? = nil,
+        clientFingerprint: String? = nil,
+        realityPublicKey: String? = nil,
+        realityShortId: String? = nil
+    ) {
         self.name = name
         self.type = type
+        self.server = server
+        self.port = port
+        self.uuid = uuid
+        self.cipher = cipher
+        self.alterId = alterId
+        self.network = network
+        self.tls = tls
+        self.servername = servername
+        self.alpn = alpn
+        self.skipCertVerify = skipCertVerify
+        self.flow = flow
+        self.clientFingerprint = clientFingerprint
+        self.realityPublicKey = realityPublicKey
+        self.realityShortId = realityShortId
     }
 }
 
@@ -118,6 +163,11 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
     public var proxies: [SwiftCoreProxy]
     public var proxyGroups: [SwiftCoreProxyGroup]
     public var rules: [SwiftCoreRule]
+    public var geoipURL: String
+    public var geositeURL: String
+
+    public static let defaultGeoIPURL = "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat"
+    public static let defaultGeoSiteURL = "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat"
 
     public init(
         mixedPort: Int,
@@ -129,7 +179,9 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
         allowLAN: Bool,
         proxies: [SwiftCoreProxy],
         proxyGroups: [SwiftCoreProxyGroup],
-        rules: [SwiftCoreRule]
+        rules: [SwiftCoreRule],
+        geoipURL: String = SwiftCoreConfiguration.defaultGeoIPURL,
+        geositeURL: String = SwiftCoreConfiguration.defaultGeoSiteURL
     ) {
         self.mixedPort = mixedPort
         self.controllerHost = controllerHost
@@ -141,6 +193,8 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
         self.proxies = proxies
         self.proxyGroups = proxyGroups
         self.rules = rules
+        self.geoipURL = geoipURL
+        self.geositeURL = geositeURL
     }
 
     public static func load(from path: String) throws -> SwiftCoreConfiguration {
@@ -158,10 +212,8 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
 
         let mixedPort = try intValue(root["mixed-port"], key: "mixed-port")
         let (controllerHost, controllerPort) = try parseController(root["external-controller"])
-        guard let secret = root["secret"] as? String,
-              !secret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw SwiftCoreError.invalidConfig("secret must be present.")
-        }
+        // `secret` is optional; an empty secret disables controller authentication (mihomo behavior).
+        let secret = (root["secret"] as? String) ?? ""
 
         let proxies = parseProxies(root["proxies"])
         var groups = parseProxyGroups(root["proxy-groups"])
@@ -169,6 +221,7 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
             groups = [SwiftCoreProxyGroup(name: "Default", type: "select", proxies: ["DIRECT"])]
         }
         let rules = parseRules(root["rules"])
+        let geox = root["geox-url"] as? [String: Any]
 
         return SwiftCoreConfiguration(
             mixedPort: mixedPort,
@@ -180,7 +233,9 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
             allowLAN: (root["allow-lan"] as? Bool) ?? false,
             proxies: proxies,
             proxyGroups: groups,
-            rules: rules.isEmpty ? [SwiftCoreRule(type: "MATCH", payload: "", proxy: groups[0].name)] : rules
+            rules: rules.isEmpty ? [SwiftCoreRule(type: "MATCH", payload: "", proxy: groups[0].name)] : rules,
+            geoipURL: (geox?["geoip"] as? String) ?? defaultGeoIPURL,
+            geositeURL: (geox?["geosite"] as? String) ?? defaultGeoSiteURL
         )
     }
 
@@ -192,8 +247,11 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
     }
 
     private static func parseController(_ value: Any?) throws -> (String, Int) {
-        guard let controller = value as? String,
-              let separator = controller.lastIndex(of: ":") else {
+        // `external-controller` is optional; default to a local controller when absent.
+        guard let controller = value as? String, !controller.isEmpty else {
+            return ("127.0.0.1", 9090)
+        }
+        guard let separator = controller.lastIndex(of: ":") else {
             throw SwiftCoreError.invalidConfig("external-controller must be host:port.")
         }
         let host = String(controller[..<separator])
@@ -212,7 +270,31 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
             guard let name = entry["name"] as? String, !name.isEmpty else {
                 return nil
             }
-            return SwiftCoreProxy(name: name, type: (entry["type"] as? String) ?? "unknown")
+            let reality = entry["reality-opts"] as? [String: Any]
+            let shortId: String?
+            switch reality?["short-id"] {
+            case let value as String: shortId = value
+            case let value as Int: shortId = String(value)
+            default: shortId = nil
+            }
+            return SwiftCoreProxy(
+                name: name,
+                type: (entry["type"] as? String) ?? "unknown",
+                server: entry["server"] as? String,
+                port: entry["port"] as? Int,
+                uuid: entry["uuid"] as? String,
+                cipher: (entry["cipher"] as? String) ?? (entry["security"] as? String),
+                alterId: (entry["alterId"] as? Int) ?? (entry["alterid"] as? Int),
+                network: entry["network"] as? String,
+                tls: (entry["tls"] as? Bool) ?? false,
+                servername: (entry["servername"] as? String) ?? (entry["sni"] as? String),
+                alpn: entry["alpn"] as? [String],
+                skipCertVerify: (entry["skip-cert-verify"] as? Bool) ?? false,
+                flow: entry["flow"] as? String,
+                clientFingerprint: entry["client-fingerprint"] as? String,
+                realityPublicKey: reality?["public-key"] as? String,
+                realityShortId: shortId
+            )
         }
     }
 

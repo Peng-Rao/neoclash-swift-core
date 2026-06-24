@@ -116,6 +116,72 @@ final class SwiftCoreTests: XCTestCase {
         socksSocket.close()
     }
 
+    func testRuntimeRoutesThroughVLESSOutbound() throws {
+        let mixedPort = try Self.unusedTCPPort()
+        let controllerPort = try Self.unusedTCPPort(excluding: [mixedPort])
+        let vlessPort = try Self.unusedTCPPort(excluding: [mixedPort, controllerPort])
+
+        let uuidString = "11111111-1111-1111-1111-111111111111"
+        let server = FakeVLESSServer(port: vlessPort, expectedUUID: [UInt8](repeating: 0x11, count: 16))
+        try server.start()
+        defer { server.stop() }
+
+        let yaml = """
+        mixed-port: \(mixedPort)
+        external-controller: 127.0.0.1:\(controllerPort)
+        secret: test-secret
+        mode: rule
+        log-level: info
+        allow-lan: false
+        proxies:
+          - name: vless-test
+            type: vless
+            server: 127.0.0.1
+            port: \(vlessPort)
+            uuid: \(uuidString)
+        proxy-groups:
+          - name: Default
+            type: select
+            proxies:
+              - vless-test
+        rules:
+          - MATCH,vless-test
+        """
+        let configuration = try SwiftCoreConfiguration.parse(yaml: yaml)
+        let runtime = SwiftCoreRuntimeSession(configuration: configuration)
+        try runtime.start()
+        defer { runtime.stop() }
+
+        let response = try TCPSocket.roundTrip(
+            port: mixedPort,
+            request: "GET http://127.0.0.1:\(vlessPort)/vless HTTP/1.1\r\nHost: 127.0.0.1:\(vlessPort)\r\nConnection: close\r\n\r\n"
+        )
+        XCTAssertTrue(response.contains("swift-core-ok /vless"), response)
+    }
+
+    func testDelayEndpointMeasuresDirect() async throws {
+        let mixedPort = try Self.unusedTCPPort()
+        let controllerPort = try Self.unusedTCPPort(excluding: [mixedPort])
+        let originPort = try Self.unusedTCPPort(excluding: [mixedPort, controllerPort])
+
+        let origin = TinyHTTPServer(port: originPort)
+        try origin.start()
+        defer { origin.stop() }
+
+        let configuration = try SwiftCoreConfiguration.parse(yaml: Self.sampleYAML(mixedPort: mixedPort, controllerPort: controllerPort))
+        let runtime = SwiftCoreRuntimeSession(configuration: configuration)
+        try runtime.start()
+        defer { runtime.stop() }
+
+        let response = try await controllerJSON(
+            path: "/proxies/DIRECT/delay?url=http://127.0.0.1:\(originPort)/generate_204&timeout=3000",
+            port: controllerPort
+        )
+        let delay = try XCTUnwrap(response["delay"] as? Int)
+        XCTAssertGreaterThanOrEqual(delay, 0)
+        XCTAssertLessThan(delay, 3000)
+    }
+
     private static func sampleYAML(mixedPort: Int = 17897, controllerPort: Int = 19097) -> String {
         """
         mixed-port: \(mixedPort)
@@ -295,6 +361,124 @@ private final class TinyHTTPServer: @unchecked Sendable {
         let response = "HTTP/1.1 200 OK\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
         _ = response.withCString { pointer in
             Darwin.write(fd, pointer, strlen(pointer))
+        }
+    }
+}
+
+/// A minimal raw-socket VLESS server for integration testing: it reads and verifies the VLESS
+/// request header, strips it, then replies with the VLESS response header followed by an HTTP 200
+/// echoing the request path — mirroring `TinyHTTPServer` so the same client assertions apply.
+private final class FakeVLESSServer: @unchecked Sendable {
+    private let port: Int
+    private let expectedUUID: [UInt8]
+    private var listenFD: Int32 = -1
+    private var thread: Thread?
+    private var isRunning = false
+
+    init(port: Int, expectedUUID: [UInt8]) {
+        self.port = port
+        self.expectedUUID = expectedUUID
+    }
+
+    func start() throws {
+        listenFD = socket(AF_INET, SOCK_STREAM, 0)
+        guard listenFD >= 0 else {
+            throw POSIXError(.init(rawValue: errno) ?? .EIO)
+        }
+        var reuse: Int32 = 1
+        setsockopt(listenFD, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
+
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = in_port_t(UInt16(port).bigEndian)
+        address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+        let bindResult = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(listenFD, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard bindResult == 0, listen(listenFD, 16) == 0 else {
+            throw POSIXError(.init(rawValue: errno) ?? .EIO)
+        }
+
+        isRunning = true
+        let thread = Thread { [weak self] in
+            self?.acceptLoop()
+        }
+        self.thread = thread
+        thread.start()
+    }
+
+    func stop() {
+        isRunning = false
+        if listenFD >= 0 {
+            Darwin.shutdown(listenFD, SHUT_RDWR)
+            Darwin.close(listenFD)
+            listenFD = -1
+        }
+    }
+
+    private func acceptLoop() {
+        while isRunning {
+            let fd = accept(listenFD, nil, nil)
+            guard fd >= 0 else {
+                continue
+            }
+            Thread {
+                self.handle(fd: fd)
+            }.start()
+        }
+    }
+
+    private func handle(fd: Int32) {
+        defer { Darwin.close(fd) }
+        var timeout = timeval(tv_sec: 2, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+
+        var buffer: [UInt8] = []
+        var chunk = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let count = Darwin.read(fd, &chunk, chunk.count)
+            guard count > 0 else { return }
+            buffer.append(contentsOf: chunk.prefix(count))
+            guard let headerLength = Self.headerLength(buffer), buffer.count >= headerLength else {
+                continue
+            }
+            let httpBytes = Array(buffer[headerLength...])
+            guard httpBytes.containsSequence([13, 10, 13, 10]) else {
+                continue
+            }
+            respond(fd: fd, header: Array(buffer[0..<headerLength]), httpBytes: httpBytes)
+            return
+        }
+    }
+
+    /// Length of a VLESS request header given the bytes seen so far, or nil if not yet determinable.
+    private static func headerLength(_ buffer: [UInt8]) -> Int? {
+        guard buffer.count >= 22 else { return nil }
+        switch buffer[21] {
+        case 0x01: return 26              // IPv4
+        case 0x03: return 38              // IPv6
+        case 0x02: return 23 + Int(buffer[22]) // domain (1 length byte + name)
+        default: return nil
+        }
+    }
+
+    private func respond(fd: Int32, header: [UInt8], httpBytes: [UInt8]) {
+        let version = header[0]
+        let command = header[18]
+        let uuid = Array(header[1..<17])
+        let request = String(decoding: httpBytes, as: UTF8.self)
+        let path = request.split(separator: " ").dropFirst().first.map(String.init) ?? "/"
+        let accepted = version == 0x00 && command == 0x01 && uuid == expectedUUID
+        let body = accepted ? "swift-core-ok \(path)" : "swift-core-bad"
+        let httpResponse = "HTTP/1.1 200 OK\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
+
+        var out: [UInt8] = [0x00, 0x00] // VLESS response header: version + addon length
+        out.append(contentsOf: Array(httpResponse.utf8))
+        _ = out.withUnsafeBytes { pointer in
+            Darwin.write(fd, pointer.baseAddress, out.count)
         }
     }
 }
