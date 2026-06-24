@@ -37,6 +37,7 @@ public final class SwiftCoreState: @unchecked Sendable {
     private var outbounds: [String: SwiftCoreOutbound]
     private var delays: [String: Int] = [:]            // proxy name -> last successful delay (ms)
     private var loadBalanceCounters: [String: Int] = [:]
+    private var geoDatabase: SwiftCoreGeoDatabase?
 
     public init(configuration: SwiftCoreConfiguration) {
         self.configuration = configuration
@@ -283,7 +284,7 @@ public final class SwiftCoreState: @unchecked Sendable {
                 let proxy = configuration.proxyGroups.first?.name ?? "DIRECT"
                 return resolve(proxy: proxy, host: routeContext.host, chain: [proxy])
             default:
-                for rule in configuration.rules where SwiftCoreRuleMatcher.matches(rule: rule, context: routeContext) {
+                for rule in configuration.rules where SwiftCoreRuleMatcher.matches(rule: rule, context: routeContext, geo: geoDatabase) {
                     return resolve(proxy: rule.proxy, host: routeContext.host, chain: [rule.proxy])
                 }
                 return .outbound(chain: ["DIRECT"], outbound: directOutbound)
@@ -304,6 +305,31 @@ public final class SwiftCoreState: @unchecked Sendable {
 
     public func delay(for name: String) -> Int? {
         withLock { delays[name] }
+    }
+
+    // MARK: Geo databases
+
+    public func setGeoDatabase(_ database: SwiftCoreGeoDatabase) {
+        withLock { geoDatabase = database }
+    }
+
+    public var geoipURL: String { withLock { configuration.geoipURL } }
+    public var geositeURL: String { withLock { configuration.geositeURL } }
+
+    /// Whether the loaded rules reference GEOIP / GEOSITE, so the runtime can decide to fetch them.
+    public func requiresGeoData() -> (geoip: Bool, geosite: Bool) {
+        withLock {
+            var geoip = false
+            var geosite = false
+            for rule in configuration.rules {
+                switch rule.type.uppercased() {
+                case "GEOIP": geoip = true
+                case "GEOSITE": geosite = true
+                default: break
+                }
+            }
+            return (geoip, geosite)
+        }
     }
 
     /// Proxies (not groups, not DIRECT/REJECT) that the periodic monitor should test.

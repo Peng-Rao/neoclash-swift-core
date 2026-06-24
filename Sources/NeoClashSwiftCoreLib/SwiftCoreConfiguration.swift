@@ -163,6 +163,11 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
     public var proxies: [SwiftCoreProxy]
     public var proxyGroups: [SwiftCoreProxyGroup]
     public var rules: [SwiftCoreRule]
+    public var geoipURL: String
+    public var geositeURL: String
+
+    public static let defaultGeoIPURL = "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat"
+    public static let defaultGeoSiteURL = "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat"
 
     public init(
         mixedPort: Int,
@@ -174,7 +179,9 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
         allowLAN: Bool,
         proxies: [SwiftCoreProxy],
         proxyGroups: [SwiftCoreProxyGroup],
-        rules: [SwiftCoreRule]
+        rules: [SwiftCoreRule],
+        geoipURL: String = SwiftCoreConfiguration.defaultGeoIPURL,
+        geositeURL: String = SwiftCoreConfiguration.defaultGeoSiteURL
     ) {
         self.mixedPort = mixedPort
         self.controllerHost = controllerHost
@@ -186,6 +193,8 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
         self.proxies = proxies
         self.proxyGroups = proxyGroups
         self.rules = rules
+        self.geoipURL = geoipURL
+        self.geositeURL = geositeURL
     }
 
     public static func load(from path: String) throws -> SwiftCoreConfiguration {
@@ -212,6 +221,7 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
             groups = [SwiftCoreProxyGroup(name: "Default", type: "select", proxies: ["DIRECT"])]
         }
         let rules = parseRules(root["rules"])
+        let geox = root["geox-url"] as? [String: Any]
 
         return SwiftCoreConfiguration(
             mixedPort: mixedPort,
@@ -223,7 +233,9 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
             allowLAN: (root["allow-lan"] as? Bool) ?? false,
             proxies: proxies,
             proxyGroups: groups,
-            rules: rules.isEmpty ? [SwiftCoreRule(type: "MATCH", payload: "", proxy: groups[0].name)] : rules
+            rules: rules.isEmpty ? [SwiftCoreRule(type: "MATCH", payload: "", proxy: groups[0].name)] : rules,
+            geoipURL: (geox?["geoip"] as? String) ?? defaultGeoIPURL,
+            geositeURL: (geox?["geosite"] as? String) ?? defaultGeoSiteURL
         )
     }
 

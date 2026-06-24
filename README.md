@@ -61,10 +61,23 @@ rules:
 ## Routing rules
 
 Supported rule types: `MATCH`, `DOMAIN`, `DOMAIN-SUFFIX`, `DOMAIN-KEYWORD`,
-`DOMAIN-REGEX`, `IP-CIDR`, `IP-CIDR6`, `DST-PORT`, `SRC-PORT`. IP rules match IP
-literals (domain→IP resolution for non-`no-resolve` rules arrives with the DNS
-subsystem). `GEOIP`/`GEOSITE` (geo databases), `PROCESS-NAME`, and `RULE-SET`
-(rule providers) are not evaluated yet — such rules are skipped with a warning.
+`DOMAIN-REGEX`, `IP-CIDR`, `IP-CIDR6`, `DST-PORT`, `SRC-PORT`, `GEOIP`, `GEOSITE`.
+IP rules match IP literals (domain→IP resolution for non-`no-resolve` rules
+arrives with the DNS subsystem). `PROCESS-NAME` and `RULE-SET` (rule providers)
+are not evaluated yet — such rules are skipped with a warning.
+
+`GEOIP`/`GEOSITE` use the v2ray-format `geoip.dat` / `geosite.dat`, downloaded
+from `geox-url` (defaults to MetaCubeX's releases) into the runtime directory
+and cached. Override per profile:
+
+```yaml
+geox-url:
+  geoip: https://example.com/geoip.dat
+  geosite: https://example.com/geosite.dat
+```
+
+The databases load asynchronously, so `GEOIP`/`GEOSITE` rules start matching once
+the download completes.
 
 ## Proxy groups
 
