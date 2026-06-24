@@ -1,3 +1,7 @@
+// These integration tests use raw BSD sockets (sockaddr_in.sin_len, SOCK_STREAM as Int32, etc.)
+// and URLSession, so they are macOS-only. The crypto, TLS 1.3, REALITY, Vision, GEO, group, and
+// rule-matcher suites are cross-platform and run on Linux too.
+#if canImport(Darwin)
 import Darwin
 import Foundation
 import NeoClashSwiftCoreLib
@@ -583,3 +587,5 @@ private extension Array where Element == UInt8 {
         return false
     }
 }
+
+#endif

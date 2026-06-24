@@ -1,7 +1,11 @@
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 import NeoClashSwiftCoreLib
 
-let status = SwiftCoreMain.run(arguments: CommandLine.arguments)
-if status != 0 {
-    exit(status)
+let exitStatus = SwiftCoreMain.run(arguments: CommandLine.arguments)
+if exitStatus != 0 {
+    exit(exitStatus)
 }

@@ -11,20 +11,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-test:
-    name: Build & Test
+  macos:
+    name: Build & Test (macOS)
     # The package declares `.macOS(.v26)`, so the test binary must run on macOS 26.
     # If a macos-26 runner is unavailable on your plan, lower the deployment target
     # in Package.swift or switch this to the newest available macOS image.
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
-
       - name: Swift version
         run: swift --version
-
       - name: Build
         run: swift build
+      - name: Test
+        run: swift test
 
+  linux:
+    name: Build & Test (Linux)
+    runs-on: ubuntu-latest
+    container: swift:6.2-noble
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift version
+        run: swift --version
+      - name: Build
+        run: swift build
+      # The raw-socket integration tests are macOS-only; the crypto, TLS 1.3,
+      # REALITY, Vision, GEO, group, and rule-matcher suites run here.
       - name: Test
         run: swift test

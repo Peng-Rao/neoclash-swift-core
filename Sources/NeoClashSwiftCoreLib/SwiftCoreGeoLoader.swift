@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking // URLSession lives here on Linux
+#endif
 
 /// Downloads the v2ray-format `geoip.dat` / `geosite.dat` from `geox-url` (caching them in the
 /// runtime directory), parses them, and installs the result on `SwiftCoreState`. Runs asynchronously

@@ -107,7 +107,8 @@ public enum SwiftCoreMain {
             try SwiftCoreRuntime(command: command).run()
             return 0
         } catch {
-            fputs("\(error.localizedDescription)\n", stderr)
+            // Avoid the global C `stderr` (flagged as non-concurrency-safe on Linux/Glibc).
+            FileHandle.standardError.write(Data("\(error.localizedDescription)\n".utf8))
             return 1
         }
     }
