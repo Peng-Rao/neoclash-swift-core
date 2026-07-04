@@ -39,6 +39,7 @@ public final class SwiftCoreState: @unchecked Sendable {
     private var loadBalanceCounters: [String: Int] = [:]
     private var geoDatabase: SwiftCoreGeoDatabase?
     private var ruleSet: SwiftCoreRuleSet?
+    private var resolver: SwiftCoreDNSResolver?
 
     public init(configuration: SwiftCoreConfiguration) {
         self.configuration = configuration
@@ -338,6 +339,41 @@ public final class SwiftCoreState: @unchecked Sendable {
 
     public func ruleProviders() -> [SwiftCoreRuleProvider] {
         withLock { configuration.ruleProviders }
+    }
+
+    // MARK: DNS-assisted routing
+
+    public var dnsEnabled: Bool { withLock { configuration.dns.enable } }
+    public func dnsConfig() -> SwiftCoreDNSConfig { withLock { configuration.dns } }
+
+    public func setResolver(_ newResolver: SwiftCoreDNSResolver) {
+        withLock { resolver = newResolver }
+    }
+
+    /// Whether a domain target should be resolved before routing so IP-based rules can apply:
+    /// a resolver is available and at least one IP-CIDR/GEOIP rule is not `no-resolve`.
+    public func shouldResolveForRouting(host: String) -> Bool {
+        withLock {
+            guard resolver != nil, case .domain = SwiftCoreAddress.detect(host: host) else { return false }
+            return configuration.rules.contains { rule in
+                !rule.noResolve && ["IP-CIDR", "IP-CIDR6", "GEOIP"].contains(rule.type.uppercased())
+            }
+        }
+    }
+
+    /// Resolves `host` (if a resolver is set) and routes with the resolved IP available to IP rules.
+    /// The resolution happens off the lock; `route(context:)` re-takes it.
+    public func resolvedRoute(host: String, destinationPort: Int, sourcePort: Int?) async -> SwiftCoreRouteDecision {
+        var resolvedIP: SwiftCoreAddress?
+        if let resolver = withLock({ self.resolver }) {
+            resolvedIP = await resolver.resolveFirst(host)
+        }
+        return route(context: SwiftCoreRouteContext(
+            host: host,
+            destinationPort: destinationPort,
+            sourcePort: sourcePort,
+            resolvedIP: resolvedIP
+        ))
     }
 
     public var geoipURL: String { withLock { configuration.geoipURL } }

@@ -203,12 +203,45 @@ final class SwiftCoreMixedProxyHandler: ChannelInboundHandler, @unchecked Sendab
         clientSuccessBytes: ByteBuffer?,
         clientFailureBytes: ByteBuffer?
     ) {
-        let routeContext = SwiftCoreRouteContext(
-            host: target.host,
-            destinationPort: target.port,
-            sourcePort: context.channel.remoteAddress?.port
-        )
-        let decision = state.route(context: routeContext)
+        mode = .connecting
+        let clientChannel = context.channel
+        let clientEventLoop = context.eventLoop
+        let sourcePort = context.channel.remoteAddress?.port
+        clientChannel.setOption(ChannelOptions.autoRead, value: false).whenComplete { _ in }
+
+        // When a domain target needs resolution for IP/GEOIP rules, resolve first (off the loop),
+        // then route + connect back on the event loop. Otherwise route synchronously.
+        if state.shouldResolveForRouting(host: target.host) {
+            Task { [state, weak self] in
+                let decision = await state.resolvedRoute(host: target.host, destinationPort: target.port, sourcePort: sourcePort)
+                clientEventLoop.execute {
+                    self?.handleRouteDecision(
+                        decision, target: target, clientChannel: clientChannel, clientEventLoop: clientEventLoop,
+                        protocolName: protocolName, initialUpstreamBytes: initialUpstreamBytes,
+                        clientSuccessBytes: clientSuccessBytes, clientFailureBytes: clientFailureBytes
+                    )
+                }
+            }
+        } else {
+            let decision = state.route(context: SwiftCoreRouteContext(host: target.host, destinationPort: target.port, sourcePort: sourcePort))
+            handleRouteDecision(
+                decision, target: target, clientChannel: clientChannel, clientEventLoop: clientEventLoop,
+                protocolName: protocolName, initialUpstreamBytes: initialUpstreamBytes,
+                clientSuccessBytes: clientSuccessBytes, clientFailureBytes: clientFailureBytes
+            )
+        }
+    }
+
+    private func handleRouteDecision(
+        _ decision: SwiftCoreRouteDecision,
+        target: SwiftCoreProxyTarget,
+        clientChannel: Channel,
+        clientEventLoop: EventLoop,
+        protocolName: String,
+        initialUpstreamBytes: ByteBuffer?,
+        clientSuccessBytes: ByteBuffer?,
+        clientFailureBytes: ByteBuffer?
+    ) {
         let chain: [String]
         let outbound: SwiftCoreOutbound
         switch decision {
@@ -218,23 +251,18 @@ final class SwiftCoreMixedProxyHandler: ChannelInboundHandler, @unchecked Sendab
         case .reject:
             state.appendLog(level: "info", message: "Rejected \(protocolName) connection to \(target.host):\(target.port)")
             if let failure = clientFailureBytes {
-                context.writeAndFlush(Self.wrapOutboundOut(failure), promise: nil)
+                clientChannel.writeAndFlush(failure, promise: nil)
             }
-            close(context: context)
+            closeConnection(clientChannel: clientChannel)
             return
         case .unsupported(_, let proxy):
             state.appendLog(level: "warning", message: "Proxy \(proxy) is not implemented by Swift core v1")
             if let failure = clientFailureBytes {
-                context.writeAndFlush(Self.wrapOutboundOut(failure), promise: nil)
+                clientChannel.writeAndFlush(failure, promise: nil)
             }
-            close(context: context)
+            closeConnection(clientChannel: clientChannel)
             return
         }
-
-        mode = .connecting
-        let clientChannel = context.channel
-        let clientEventLoop = context.eventLoop
-        clientChannel.setOption(ChannelOptions.autoRead, value: false).whenComplete { _ in }
 
         let request = SwiftCoreOutboundRequest(host: target.host, port: target.port)
         outbound.connect(request: request, group: group) { [state, connectionIDRef, clientChannel] in
@@ -277,6 +305,14 @@ final class SwiftCoreMixedProxyHandler: ChannelInboundHandler, @unchecked Sendab
                 }
             }
         }
+    }
+
+    private func closeConnection(clientChannel: Channel) {
+        mode = .closed
+        upstream?.close(promise: nil)
+        state.removeConnection(id: connectionID)
+        connectionIDRef.value = nil
+        clientChannel.close(promise: nil)
     }
 
     private func parseSocksRequest(buffer: inout ByteBuffer) -> SwiftCoreProxyTarget? {

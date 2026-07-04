@@ -60,6 +60,9 @@ public final class SwiftCoreRuntimeSession: @unchecked Sendable {
             healthMonitor = monitor
             startGeoLoaderIfNeeded()
             startRuleProviderLoaderIfNeeded()
+            if state.dnsEnabled {
+                state.setResolver(SwiftCoreDNSResolver(config: state.dnsConfig(), group: group))
+            }
         } catch {
             stop()
             throw error

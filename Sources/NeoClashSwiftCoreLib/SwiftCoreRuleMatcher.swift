@@ -8,12 +8,16 @@ public struct SwiftCoreRouteContext: Sendable {
     public let address: SwiftCoreAddress
     public let destinationPort: Int
     public let sourcePort: Int?
+    /// An IP the domain resolved to (nil for literal-IP targets or when resolution wasn't done),
+    /// used by IP-CIDR/GEOIP rules that aren't `no-resolve`.
+    public let resolvedIP: SwiftCoreAddress?
 
-    public init(host: String, destinationPort: Int, sourcePort: Int? = nil) {
+    public init(host: String, destinationPort: Int, sourcePort: Int? = nil, resolvedIP: SwiftCoreAddress? = nil) {
         self.host = host
         self.address = SwiftCoreAddress.detect(host: host)
         self.destinationPort = destinationPort
         self.sourcePort = sourcePort
+        self.resolvedIP = resolvedIP
     }
 }
 
@@ -37,7 +41,8 @@ enum SwiftCoreRuleMatcher {
         let host = context.host.trimmingCharacters(in: CharacterSet(charactersIn: "[]")).lowercased()
         switch rule.type.uppercased() {
         case "GEOIP":
-            return geo?.geoip?.matches(country: rule.payload, address: context.address) ?? false
+            guard let ip = ipForMatching(rule: rule, context: context) else { return false }
+            return geo?.geoip?.matches(country: rule.payload, address: ip) ?? false
         case "GEOSITE":
             return geo?.geosite?.matches(country: rule.payload, host: host) ?? false
         case "RULE-SET":
@@ -57,13 +62,25 @@ enum SwiftCoreRuleMatcher {
             }
             return regex.firstMatch(in: host, options: [], range: NSRange(host.startIndex..., in: host)) != nil
         case "IP-CIDR", "IP-CIDR6":
-            return cidrContains(cidr: rule.payload, address: context.address)
+            guard let ip = ipForMatching(rule: rule, context: context) else { return false }
+            return cidrContains(cidr: rule.payload, address: ip)
         case "DST-PORT":
             return portMatches(spec: rule.payload, port: context.destinationPort)
         case "SRC-PORT":
             return portMatches(spec: rule.payload, port: context.sourcePort)
         default:
             return false
+        }
+    }
+
+    /// The IP an IP-CIDR/GEOIP rule matches against: the literal-IP target, or (unless the rule is
+    /// `no-resolve`) the resolved IP of a domain target.
+    private static func ipForMatching(rule: SwiftCoreRule, context: SwiftCoreRouteContext) -> SwiftCoreAddress? {
+        switch context.address {
+        case .ipv4, .ipv6:
+            return context.address
+        case .domain:
+            return rule.noResolve ? nil : context.resolvedIP
         }
     }
 
