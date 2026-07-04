@@ -140,4 +140,95 @@ final class GeoTests: XCTestCase {
         XCTAssertEqual(chosen(host: "1.2.3.4"), "DIRECT") // GEOIP,CN
         XCTAssertEqual(chosen(host: "8.8.8.8"), "P")      // MATCH fallthrough
     }
+
+    // MARK: Filtered loading and compact ranges
+
+    func testGeoIPCodeFilterSkipsUnrequestedCountries() {
+        let data = geoIPList([
+            ("CN", [([1, 2, 3, 0], 24)]),
+            ("US", [([8, 8, 8, 0], 24)]),
+            ("JP", [([9, 9, 9, 0], 24)])
+        ])
+        let geoip = SwiftCoreGeoIP(data: data, codes: ["CN"])
+        XCTAssertEqual(geoip.countryCount, 1)
+        XCTAssertTrue(geoip.matches(country: "CN", address: .ipv4([1, 2, 3, 4])))
+        XCTAssertFalse(geoip.matches(country: "US", address: .ipv4([8, 8, 8, 8])))
+    }
+
+    func testGeoSiteCodeFilterSkipsUnrequestedCategories() {
+        let data = geoSiteList([
+            ("CN", [(2, "weibo.com")]),
+            ("ADS", [(2, "tracker.example")])
+        ])
+        let geosite = SwiftCoreGeoSite(data: data, codes: ["CN"])
+        XCTAssertEqual(geosite.countryCount, 1)
+        XCTAssertTrue(geosite.matches(country: "CN", host: "weibo.com"))
+        XCTAssertFalse(geosite.matches(country: "ADS", host: "tracker.example"))
+    }
+
+    func testGeoIPMatchesIPv6AndRangeBoundaries() {
+        var v6Network = [UInt8](repeating: 0, count: 16)
+        v6Network[0] = 0x20
+        v6Network[1] = 0x01
+        let data = geoIPList([
+            ("CN", [
+                (v6Network, 32),            // 2001::/32
+                ([1, 2, 3, 0], 24),
+                ([1, 2, 4, 0], 24)          // adjacent to 1.2.3.0/24 → merges into one interval
+            ])
+        ])
+        let geoip = SwiftCoreGeoIP(data: data)
+
+        var inside = [UInt8](repeating: 0, count: 16)
+        inside[0] = 0x20
+        inside[1] = 0x01
+        inside[15] = 0x01
+        var outside = [UInt8](repeating: 0, count: 16)
+        outside[0] = 0x20
+        outside[1] = 0x02
+        XCTAssertTrue(geoip.matches(country: "CN", address: .ipv6(inside)))
+        XCTAssertFalse(geoip.matches(country: "CN", address: .ipv6(outside)))
+
+        XCTAssertTrue(geoip.matches(country: "CN", address: .ipv4([1, 2, 3, 0])))    // interval start
+        XCTAssertTrue(geoip.matches(country: "CN", address: .ipv4([1, 2, 4, 255])))  // interval end
+        XCTAssertFalse(geoip.matches(country: "CN", address: .ipv4([1, 2, 2, 255]))) // just below
+        XCTAssertFalse(geoip.matches(country: "CN", address: .ipv4([1, 2, 5, 0])))   // just above
+    }
+
+    func testRequiredGeoCodesComeFromRules() throws {
+        let yaml = """
+        mixed-port: 7890
+        secret: s
+        rules:
+          - GEOSITE,cn,DIRECT
+          - GEOIP,CN,DIRECT,no-resolve
+          - GEOIP,private,DIRECT,no-resolve
+          - MATCH,DIRECT
+        """
+        let state = SwiftCoreState(configuration: try SwiftCoreConfiguration.parse(yaml: yaml))
+        let codes = state.requiredGeoCodes()
+        XCTAssertEqual(codes.geoip, ["CN", "PRIVATE"])
+        XCTAssertEqual(codes.geosite, ["CN"])
+    }
+
+    func testRequiredGeoCodesLoadEverythingWithClassicalProviders() throws {
+        let yaml = """
+        mixed-port: 7890
+        secret: s
+        rule-providers:
+          mixed:
+            type: file
+            behavior: classical
+            path: ./mixed.yaml
+        rules:
+          - GEOIP,CN,DIRECT,no-resolve
+          - RULE-SET,mixed,DIRECT
+          - MATCH,DIRECT
+        """
+        let state = SwiftCoreState(configuration: try SwiftCoreConfiguration.parse(yaml: yaml))
+        let codes = state.requiredGeoCodes()
+        // Classical providers can reference arbitrary geo codes → empty means "load all".
+        XCTAssertTrue(codes.geoip.isEmpty)
+        XCTAssertTrue(codes.geosite.isEmpty)
+    }
 }

@@ -359,6 +359,30 @@ public final class SwiftCoreState: @unchecked Sendable {
         }
     }
 
+    /// Country/category codes referenced by GEOIP/GEOSITE rules, so the loader can skip
+    /// materializing the rest of the databases. Empty sets mean "load everything": classical
+    /// rule providers can carry geo rules whose codes are only known after download.
+    public func requiredGeoCodes() -> (geoip: Set<String>, geosite: Set<String>) {
+        withLock {
+            let hasClassicalProviders = configuration.ruleProviders.contains {
+                $0.behavior.lowercased() == "classical"
+            }
+            if hasClassicalProviders {
+                return ([], [])
+            }
+            var geoip: Set<String> = []
+            var geosite: Set<String> = []
+            for rule in configuration.rules {
+                switch rule.type.uppercased() {
+                case "GEOIP": geoip.insert(rule.payload.uppercased())
+                case "GEOSITE": geosite.insert(rule.payload.uppercased())
+                default: break
+                }
+            }
+            return (geoip, geosite)
+        }
+    }
+
     /// Proxies (not groups, not DIRECT/REJECT) that the periodic monitor should test.
     public func outboundsToHealthCheck() -> [(name: String, outbound: SwiftCoreOutbound)] {
         withLock { configuration.proxies.compactMap { proxy in
