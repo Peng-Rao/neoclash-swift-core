@@ -170,6 +170,37 @@ public struct SwiftCoreRuleProvider: Equatable, Sendable {
     }
 }
 
+public struct SwiftCoreDNSConfig: Equatable, Sendable {
+    public var enable: Bool
+    public var enhancedMode: String          // "fake-ip", "redir-host", or "normal"
+    public var fakeIPRange: String
+    public var fakeIPFilter: [String]
+    public var nameservers: [String]
+    public var fallback: [String]
+    public var defaultNameservers: [String]
+    public var hosts: [String: String]
+
+    public init(
+        enable: Bool = false,
+        enhancedMode: String = "normal",
+        fakeIPRange: String = "198.18.0.1/16",
+        fakeIPFilter: [String] = [],
+        nameservers: [String] = [],
+        fallback: [String] = [],
+        defaultNameservers: [String] = [],
+        hosts: [String: String] = [:]
+    ) {
+        self.enable = enable
+        self.enhancedMode = enhancedMode
+        self.fakeIPRange = fakeIPRange
+        self.fakeIPFilter = fakeIPFilter
+        self.nameservers = nameservers
+        self.fallback = fallback
+        self.defaultNameservers = defaultNameservers
+        self.hosts = hosts
+    }
+}
+
 public struct SwiftCoreConfiguration: Equatable, Sendable {
     public var mixedPort: Int
     public var controllerHost: String
@@ -182,6 +213,7 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
     public var proxyGroups: [SwiftCoreProxyGroup]
     public var rules: [SwiftCoreRule]
     public var ruleProviders: [SwiftCoreRuleProvider]
+    public var dns: SwiftCoreDNSConfig
     public var geoipURL: String
     public var geositeURL: String
 
@@ -200,6 +232,7 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
         proxyGroups: [SwiftCoreProxyGroup],
         rules: [SwiftCoreRule],
         ruleProviders: [SwiftCoreRuleProvider] = [],
+        dns: SwiftCoreDNSConfig = SwiftCoreDNSConfig(),
         geoipURL: String = SwiftCoreConfiguration.defaultGeoIPURL,
         geositeURL: String = SwiftCoreConfiguration.defaultGeoSiteURL
     ) {
@@ -214,6 +247,7 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
         self.proxyGroups = proxyGroups
         self.rules = rules
         self.ruleProviders = ruleProviders
+        self.dns = dns
         self.geoipURL = geoipURL
         self.geositeURL = geositeURL
     }
@@ -243,6 +277,7 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
         }
         let rules = parseRules(root["rules"])
         let ruleProviders = parseRuleProviders(root["rule-providers"])
+        let dns = parseDNS(root["dns"], hosts: root["hosts"])
         let geox = root["geox-url"] as? [String: Any]
 
         return SwiftCoreConfiguration(
@@ -257,8 +292,36 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
             proxyGroups: groups,
             rules: rules.isEmpty ? [SwiftCoreRule(type: "MATCH", payload: "", proxy: groups[0].name)] : rules,
             ruleProviders: ruleProviders,
+            dns: dns,
             geoipURL: (geox?["geoip"] as? String) ?? defaultGeoIPURL,
             geositeURL: (geox?["geosite"] as? String) ?? defaultGeoSiteURL
+        )
+    }
+
+    private static func parseDNS(_ value: Any?, hosts hostsValue: Any?) -> SwiftCoreDNSConfig {
+        func stringList(_ any: Any?) -> [String] {
+            if let list = any as? [String] { return list }
+            if let list = any as? [Any] { return list.compactMap { $0 as? String } }
+            return []
+        }
+        var hosts: [String: String] = [:]
+        if let map = hostsValue as? [String: Any] {
+            for (key, entry) in map {
+                if let ip = entry as? String { hosts[key] = ip }
+            }
+        }
+        guard let dns = value as? [String: Any] else {
+            return SwiftCoreDNSConfig(hosts: hosts)
+        }
+        return SwiftCoreDNSConfig(
+            enable: (dns["enable"] as? Bool) ?? false,
+            enhancedMode: (dns["enhanced-mode"] as? String) ?? "normal",
+            fakeIPRange: (dns["fake-ip-range"] as? String) ?? "198.18.0.1/16",
+            fakeIPFilter: stringList(dns["fake-ip-filter"]),
+            nameservers: stringList(dns["nameserver"]),
+            fallback: stringList(dns["fallback"]),
+            defaultNameservers: stringList(dns["default-nameserver"]),
+            hosts: hosts
         )
     }
 
