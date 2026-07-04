@@ -68,7 +68,7 @@ final class SwiftCoreGeoLoader: @unchecked Sendable {
             state.appendLog(level: "info", message: "Downloaded \(filename) (\(data.count) bytes)")
             return Array(data)
         } catch {
-            state.appendLog(level: "warning", message: "geo download failed \(url): \(error.localizedDescription)")
+            state.appendLog(level: "warning", message: "geo download failed \(url): \(SwiftCoreErrorText.describe(error))")
             return nil
         }
     }

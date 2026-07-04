@@ -66,7 +66,7 @@ final class SwiftCoreRuleProviderLoader: @unchecked Sendable {
             try? data.write(to: URL(fileURLWithPath: path))
             return Array(data)
         } catch {
-            state.appendLog(level: "warning", message: "rule-provider \(provider.name) download failed: \(error.localizedDescription)")
+            state.appendLog(level: "warning", message: "rule-provider \(provider.name) download failed: \(SwiftCoreErrorText.describe(error))")
             return nil
         }
     }

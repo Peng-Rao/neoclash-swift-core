@@ -69,7 +69,7 @@ public final class SwiftCoreState: @unchecked Sendable {
                     warnings.append("Proxy \(proxy.name) of type \(proxy.type) is not supported yet; routes using it will be rejected.")
                 }
             } catch {
-                warnings.append("Proxy \(proxy.name) is invalid: \(error.localizedDescription)")
+                warnings.append("Proxy \(proxy.name) is invalid: \(SwiftCoreErrorText.describe(error))")
             }
         }
         return (result, warnings)
@@ -254,21 +254,39 @@ public final class SwiftCoreState: @unchecked Sendable {
         }
     }
 
-    public func nextLogObject() -> [String: String] {
+    /// Returns every pending log entry (oldest first) and clears the queue. Returns an empty
+    /// array when idle — the log stream must stay silent rather than fabricate entries, or
+    /// clients render a junk line for every tick.
+    public func drainLogObjects() -> [[String: String]] {
         withLock {
-            if logs.isEmpty {
-                return ["type": "info", "payload": "Swift core heartbeat"]
-            }
-            return logs.removeFirst()
+            let drained = logs
+            logs.removeAll(keepingCapacity: true)
+            return drained
         }
     }
 
     public func appendLog(level: String, message: String) {
         withLock {
+            guard Self.logRank(level) >= Self.logRank(configuration.logLevel) else {
+                return
+            }
             logs.append(["type": level, "payload": message])
             if logs.count > 256 {
                 logs.removeFirst(logs.count - 256)
             }
+        }
+    }
+
+    /// mihomo's log-level ordering: everything at or above the configured level is kept.
+    /// Unknown levels rank as info so misspelled configs stay chatty rather than silent.
+    static func logRank(_ level: String) -> Int {
+        switch level.lowercased() {
+        case "debug": 0
+        case "info": 1
+        case "warning": 2
+        case "error": 3
+        case "silent": Int.max
+        default: 1
         }
     }
 

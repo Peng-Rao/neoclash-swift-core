@@ -77,7 +77,11 @@ final class SwiftCoreMixedProxyHandler: ChannelInboundHandler, @unchecked Sendab
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
-        state.appendLog(level: "warning", message: "Mixed proxy error: \(error.localizedDescription)")
+        if SwiftCoreErrorText.isRoutineDisconnect(error) {
+            state.appendLog(level: "debug", message: "Client connection closed: \(SwiftCoreErrorText.describe(error))")
+        } else {
+            state.appendLog(level: "warning", message: "Mixed proxy error: \(SwiftCoreErrorText.describe(error))")
+        }
         close(context: context)
     }
 
@@ -251,7 +255,7 @@ final class SwiftCoreMixedProxyHandler: ChannelInboundHandler, @unchecked Sendab
                     }
                     clientChannel.setOption(ChannelOptions.autoRead, value: true).whenComplete { _ in }
                 case .failure(let error):
-                    self.state.appendLog(level: "warning", message: "Failed to connect \(target.host):\(target.port) via \(outbound.name): \(error.localizedDescription)")
+                    self.state.appendLog(level: "warning", message: "Failed to connect \(target.host):\(target.port) via \(outbound.name): \(SwiftCoreErrorText.describe(error))")
                     if let failure = clientFailureBytes {
                         clientChannel.writeAndFlush(failure, promise: nil)
                     }

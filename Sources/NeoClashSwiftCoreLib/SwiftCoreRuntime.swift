@@ -119,7 +119,7 @@ public enum SwiftCoreMain {
             return 0
         } catch {
             // Avoid the global C `stderr` (flagged as non-concurrency-safe on Linux/Glibc).
-            FileHandle.standardError.write(Data("\(error.localizedDescription)\n".utf8))
+            FileHandle.standardError.write(Data("\(SwiftCoreErrorText.describe(error))\n".utf8))
             return 1
         }
     }
