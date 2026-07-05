@@ -16,6 +16,7 @@ final class SwiftCoreVLESSOutbound: SwiftCoreOutbound, @unchecked Sendable {
     private let port: Int
     private let uuid: [UInt8]
     private let security: Security
+    private let transport: SwiftCoreStreamTransport
     private let flow: String?
     private let visionEnabled: Bool
 
@@ -29,10 +30,7 @@ final class SwiftCoreVLESSOutbound: SwiftCoreOutbound, @unchecked Sendable {
         guard let uuidString = proxy.uuid else {
             throw SwiftCoreError.invalidConfig("vless proxy \(proxy.name) requires a uuid.")
         }
-        let network = (proxy.network ?? "tcp").lowercased()
-        guard network == "tcp" else {
-            throw SwiftCoreError.invalidConfig("vless proxy \(proxy.name) network '\(network)' is not supported (tcp only).")
-        }
+        self.transport = try SwiftCoreStreamTransport.make(proxy: proxy)
         self.name = proxy.name
         self.server = server
         self.port = port
@@ -73,6 +71,7 @@ final class SwiftCoreVLESSOutbound: SwiftCoreOutbound, @unchecked Sendable {
     ) -> EventLoopFuture<Channel> {
         let uuid = self.uuid
         let security = self.security
+        let transport = self.transport
         let flow = self.flow
         let visionEnabled = self.visionEnabled
         return ClientBootstrap(group: group)
@@ -83,8 +82,8 @@ final class SwiftCoreVLESSOutbound: SwiftCoreOutbound, @unchecked Sendable {
                     switch security {
                     case .none:
                         break
-                    case .standardTLS(let transport):
-                        try channel.pipeline.syncOperations.addHandler(transport.makeHandler())
+                    case .standardTLS(let tls):
+                        try channel.pipeline.syncOperations.addHandler(tls.makeHandler())
                     case .reality(let publicKey, let shortId, let serverName, let alpn):
                         let reality = try SwiftCoreRealityHandshake(publicKeyBase64: publicKey, shortIdHex: shortId)
                         let protocols = alpn.isEmpty ? ["h2", "http/1.1"] : alpn
@@ -92,6 +91,7 @@ final class SwiftCoreVLESSOutbound: SwiftCoreOutbound, @unchecked Sendable {
                             SwiftCoreTLS13ClientHandler(serverName: serverName, alpn: protocols, reality: reality, directState: directState)
                         )
                     }
+                    try transport.addHandler(to: channel)
                     try channel.pipeline.syncOperations.addHandler(
                         SwiftCoreVLESSClientHandler(uuid: uuid, request: request, flow: flow)
                     )
