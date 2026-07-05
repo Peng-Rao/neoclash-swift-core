@@ -97,5 +97,51 @@ final class DNSTests: XCTestCase {
         XCTAssertEqual(dns.nameservers, ["223.5.5.5", "8.8.8.8"])
         XCTAssertEqual(dns.defaultNameservers, ["223.5.5.5"])
         XCTAssertEqual(dns.hosts["router.local"], "192.168.1.1")
+        // Defaults when fallback-filter / nameserver-policy are absent.
+        XCTAssertEqual(dns.fallbackFilter, SwiftCoreDNSFallbackFilter())
+        XCTAssertTrue(dns.fallbackFilter.geoIP)
+        XCTAssertEqual(dns.fallbackFilter.geoIPCode, "CN")
+        XCTAssertEqual(dns.nameserverPolicy, [])
+    }
+
+    func testDNSFallbackFilterAndPolicyParsing() throws {
+        let yaml = """
+        mixed-port: 7890
+        dns:
+          enable: true
+          nameserver:
+            - 223.5.5.5
+          fallback:
+            - tls://8.8.4.4
+            - https://1.0.0.1/dns-query
+          fallback-filter:
+            geoip: false
+            geoip-code: US
+            ipcidr:
+              - 240.0.0.0/4
+            domain:
+              - "+.google.com"
+          nameserver-policy:
+            "+.internal.corp": 10.0.0.53
+            "www.example.com,api.example.com":
+              - tls://1.1.1.1
+              - 9.9.9.9
+        proxy-groups:
+          - { name: G, type: select, proxies: [DIRECT] }
+        rules:
+          - MATCH,DIRECT
+        """
+        let dns = try SwiftCoreConfiguration.parse(yaml: yaml).dns
+        XCTAssertEqual(dns.fallback, ["tls://8.8.4.4", "https://1.0.0.1/dns-query"])
+        XCTAssertFalse(dns.fallbackFilter.geoIP)
+        XCTAssertEqual(dns.fallbackFilter.geoIPCode, "US")
+        XCTAssertEqual(dns.fallbackFilter.ipcidr, ["240.0.0.0/4"])
+        XCTAssertEqual(dns.fallbackFilter.domain, ["+.google.com"])
+        // Comma-separated keys expand to one rule per pattern; entries are sorted by key.
+        XCTAssertEqual(dns.nameserverPolicy.count, 3)
+        let byPattern = Dictionary(uniqueKeysWithValues: dns.nameserverPolicy.map { ($0.pattern, $0.servers) })
+        XCTAssertEqual(byPattern["+.internal.corp"], ["10.0.0.53"])
+        XCTAssertEqual(byPattern["www.example.com"], ["tls://1.1.1.1", "9.9.9.9"])
+        XCTAssertEqual(byPattern["api.example.com"], ["tls://1.1.1.1", "9.9.9.9"])
     }
 }

@@ -37,6 +37,7 @@ public final class SwiftCoreRuntimeSession: @unchecked Sendable {
     private var healthMonitor: SwiftCoreHealthMonitor?
     private var geoLoader: SwiftCoreGeoLoader?
     private var ruleProviderLoader: SwiftCoreRuleProviderLoader?
+    private var dnsServer: SwiftCoreDNSServer?
     private var stopped = false
 
     /// A loopback proxy saturates long before it needs an event loop per core, and each extra
@@ -61,7 +62,12 @@ public final class SwiftCoreRuntimeSession: @unchecked Sendable {
             startGeoLoaderIfNeeded()
             startRuleProviderLoaderIfNeeded()
             if state.dnsEnabled {
-                state.setResolver(SwiftCoreDNSResolver(config: state.dnsConfig(), group: group))
+                let dns = state.dnsConfig()
+                let resolver = SwiftCoreDNSResolver(config: dns, group: group)
+                // Weak: state retains the resolver; geo data may finish loading after startup.
+                resolver.setGeoIPProvider { [weak state = self.state] in state?.currentGeoIP() }
+                state.setResolver(resolver)
+                startDNSServerIfNeeded(dns: dns, resolver: resolver)
             }
         } catch {
             stop()
@@ -88,6 +94,31 @@ public final class SwiftCoreRuntimeSession: @unchecked Sendable {
         geoLoader = loader
     }
 
+    /// In fake-ip mode, build the shared pool and (if `dns.listen` is set) start the DNS server.
+    private func startDNSServerIfNeeded(dns: SwiftCoreDNSConfig, resolver: SwiftCoreDNSResolver) {
+        guard dns.isFakeIP, let pool = SwiftCoreFakeIPPool(cidr: dns.fakeIPRange) else { return }
+        state.setFakeIPPool(pool)
+        let listen = dns.listen.trimmingCharacters(in: .whitespaces)
+        guard !listen.isEmpty else { return }
+        let host: String
+        let port: Int
+        if let separator = listen.lastIndex(of: ":"), let parsed = Int(listen[listen.index(after: separator)...]) {
+            host = String(listen[..<separator])
+            port = parsed
+        } else {
+            host = listen
+            port = 53
+        }
+        let filter = SwiftCoreFakeIPFilter(patterns: dns.fakeIPFilter)
+        let server = SwiftCoreDNSServer(state: state, pool: pool, resolver: resolver, filter: filter, group: group)
+        do {
+            try server.start(host: host.isEmpty ? "0.0.0.0" : host, port: port)
+            dnsServer = server
+        } catch {
+            state.appendLog(level: "warning", message: "DNS server failed to start on \(listen): \(SwiftCoreErrorText.describe(error))")
+        }
+    }
+
     private func startRuleProviderLoaderIfNeeded() {
         guard let runtimeDirectory else { return }
         let providers = state.ruleProviders()
@@ -111,6 +142,8 @@ public final class SwiftCoreRuntimeSession: @unchecked Sendable {
         stopped = true
         healthMonitor?.stop()
         healthMonitor = nil
+        dnsServer?.stop()
+        dnsServer = nil
         try? controller?.close().wait()
         try? mixed?.close().wait()
         try? group.syncShutdownGracefully()

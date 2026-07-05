@@ -172,35 +172,74 @@ public struct SwiftCoreRuleProvider: Equatable, Sendable {
     }
 }
 
+/// `dns.fallback-filter`: decides when a primary (`nameserver`) answer is distrusted and the
+/// `fallback` answer used instead (mihomo semantics).
+public struct SwiftCoreDNSFallbackFilter: Equatable, Sendable {
+    public var geoIP: Bool           // distrust primary answers outside `geoIPCode` (needs geoip.dat)
+    public var geoIPCode: String
+    public var ipcidr: [String]      // primary answers inside these CIDRs are considered poisoned
+    public var domain: [String]      // these domains always use the fallback servers
+
+    public init(geoIP: Bool = true, geoIPCode: String = "CN", ipcidr: [String] = [], domain: [String] = []) {
+        self.geoIP = geoIP
+        self.geoIPCode = geoIPCode
+        self.ipcidr = ipcidr
+        self.domain = domain
+    }
+}
+
+/// One `dns.nameserver-policy` entry: domains matching `pattern` resolve via `servers` only.
+public struct SwiftCoreDNSPolicyRule: Equatable, Sendable {
+    public var pattern: String       // exact name, or `+.x` / `*.x` / `.x` suffix pattern
+    public var servers: [String]
+
+    public init(pattern: String, servers: [String]) {
+        self.pattern = pattern
+        self.servers = servers
+    }
+}
+
 public struct SwiftCoreDNSConfig: Equatable, Sendable {
     public var enable: Bool
+    public var listen: String                // host:port for the DNS server (empty = disabled)
     public var enhancedMode: String          // "fake-ip", "redir-host", or "normal"
     public var fakeIPRange: String
     public var fakeIPFilter: [String]
     public var nameservers: [String]
     public var fallback: [String]
+    public var fallbackFilter: SwiftCoreDNSFallbackFilter
+    public var nameserverPolicy: [SwiftCoreDNSPolicyRule]
     public var defaultNameservers: [String]
     public var hosts: [String: String]
 
     public init(
         enable: Bool = false,
+        listen: String = "",
         enhancedMode: String = "normal",
         fakeIPRange: String = "198.18.0.1/16",
         fakeIPFilter: [String] = [],
         nameservers: [String] = [],
         fallback: [String] = [],
+        fallbackFilter: SwiftCoreDNSFallbackFilter = SwiftCoreDNSFallbackFilter(),
+        nameserverPolicy: [SwiftCoreDNSPolicyRule] = [],
         defaultNameservers: [String] = [],
         hosts: [String: String] = [:]
     ) {
         self.enable = enable
+        self.listen = listen
         self.enhancedMode = enhancedMode
         self.fakeIPRange = fakeIPRange
         self.fakeIPFilter = fakeIPFilter
         self.nameservers = nameservers
         self.fallback = fallback
+        self.fallbackFilter = fallbackFilter
+        self.nameserverPolicy = nameserverPolicy
         self.defaultNameservers = defaultNameservers
         self.hosts = hosts
     }
+
+    /// Whether fake-ip enhanced mode is active.
+    public var isFakeIP: Bool { enable && enhancedMode.lowercased() == "fake-ip" }
 }
 
 public struct SwiftCoreConfiguration: Equatable, Sendable {
@@ -315,13 +354,36 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
         guard let dns = value as? [String: Any] else {
             return SwiftCoreDNSConfig(hosts: hosts)
         }
+        var filter = SwiftCoreDNSFallbackFilter()
+        if let raw = dns["fallback-filter"] as? [String: Any] {
+            filter.geoIP = (raw["geoip"] as? Bool) ?? true
+            filter.geoIPCode = (raw["geoip-code"] as? String) ?? "CN"
+            filter.ipcidr = stringList(raw["ipcidr"])
+            filter.domain = stringList(raw["domain"])
+        }
+        // nameserver-policy: pattern (or comma-separated patterns) -> server string or list.
+        var policy: [SwiftCoreDNSPolicyRule] = []
+        if let raw = dns["nameserver-policy"] as? [String: Any] {
+            for (key, entry) in raw.sorted(by: { $0.key < $1.key }) {
+                let servers: [String]
+                if let server = entry as? String { servers = [server] } else { servers = stringList(entry) }
+                guard !servers.isEmpty else { continue }
+                for pattern in key.split(separator: ",") {
+                    let trimmed = pattern.trimmingCharacters(in: .whitespaces)
+                    if !trimmed.isEmpty { policy.append(SwiftCoreDNSPolicyRule(pattern: trimmed, servers: servers)) }
+                }
+            }
+        }
         return SwiftCoreDNSConfig(
             enable: (dns["enable"] as? Bool) ?? false,
+            listen: (dns["listen"] as? String) ?? "",
             enhancedMode: (dns["enhanced-mode"] as? String) ?? "normal",
             fakeIPRange: (dns["fake-ip-range"] as? String) ?? "198.18.0.1/16",
             fakeIPFilter: stringList(dns["fake-ip-filter"]),
             nameservers: stringList(dns["nameserver"]),
             fallback: stringList(dns["fallback"]),
+            fallbackFilter: filter,
+            nameserverPolicy: policy,
             defaultNameservers: stringList(dns["default-nameserver"]),
             hosts: hosts
         )

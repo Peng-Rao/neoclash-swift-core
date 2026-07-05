@@ -40,6 +40,7 @@ public final class SwiftCoreState: @unchecked Sendable {
     private var geoDatabase: SwiftCoreGeoDatabase?
     private var ruleSet: SwiftCoreRuleSet?
     private var resolver: SwiftCoreDNSResolver?
+    private var fakeIPPool: SwiftCoreFakeIPPool?
 
     public init(configuration: SwiftCoreConfiguration) {
         self.configuration = configuration
@@ -333,6 +334,11 @@ public final class SwiftCoreState: @unchecked Sendable {
         withLock { geoDatabase = database }
     }
 
+    /// The loaded GeoIP database, if any (used by the DNS resolver's fallback geoip filter).
+    func currentGeoIP() -> SwiftCoreGeoIP? {
+        withLock { geoDatabase?.geoip }
+    }
+
     public func setRuleSet(_ newRuleSet: SwiftCoreRuleSet) {
         withLock { ruleSet = newRuleSet }
     }
@@ -348,6 +354,16 @@ public final class SwiftCoreState: @unchecked Sendable {
 
     public func setResolver(_ newResolver: SwiftCoreDNSResolver) {
         withLock { resolver = newResolver }
+    }
+
+    public func setFakeIPPool(_ pool: SwiftCoreFakeIPPool) {
+        withLock { fakeIPPool = pool }
+    }
+
+    /// If `host` is a live fake ip, the domain it maps back to (for connecting/routing by domain).
+    public func fakeIPDomain(forHost host: String) -> String? {
+        guard case .ipv4(let bytes) = SwiftCoreAddress.detect(host: host) else { return nil }
+        return withLock { fakeIPPool?.domain(forIPv4: bytes) }
     }
 
     /// Whether a domain target should be resolved before routing so IP-based rules can apply:
@@ -379,7 +395,8 @@ public final class SwiftCoreState: @unchecked Sendable {
     public var geoipURL: String { withLock { configuration.geoipURL } }
     public var geositeURL: String { withLock { configuration.geositeURL } }
 
-    /// Whether the loaded rules reference GEOIP / GEOSITE, so the runtime can decide to fetch them.
+    /// Whether the loaded rules reference GEOIP / GEOSITE, so the runtime can decide to fetch
+    /// them. The DNS fallback geoip filter also needs geoip data.
     public func requiresGeoData() -> (geoip: Bool, geosite: Bool) {
         withLock {
             var geoip = false
@@ -390,6 +407,10 @@ public final class SwiftCoreState: @unchecked Sendable {
                 case "GEOSITE": geosite = true
                 default: break
                 }
+            }
+            let dns = configuration.dns
+            if dns.enable, !dns.fallback.isEmpty, dns.fallbackFilter.geoIP {
+                geoip = true
             }
             return (geoip, geosite)
         }
@@ -414,6 +435,10 @@ public final class SwiftCoreState: @unchecked Sendable {
                 case "GEOSITE": geosite.insert(rule.payload.uppercased())
                 default: break
                 }
+            }
+            let dns = configuration.dns
+            if dns.enable, !dns.fallback.isEmpty, dns.fallbackFilter.geoIP {
+                geoip.insert(dns.fallbackFilter.geoIPCode.uppercased())
             }
             return (geoip, geosite)
         }

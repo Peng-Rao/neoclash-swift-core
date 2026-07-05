@@ -112,17 +112,30 @@ demand (tunnels a plaintext HTTP request, so the test URL must be `http://`).
 `external-controller` and `secret` are optional — when `secret` is empty,
 controller authentication is disabled (mihomo behavior).
 
-## DNS (in progress)
+## DNS
 
-A `dns:` block is parsed (`nameserver`, `fallback`, `default-nameserver`,
-`enhanced-mode`, `fake-ip-range`, `fake-ip-filter`, `hosts`). The resolver
-supports plain **UDP** and **DNS-over-HTTPS**, with a `hosts` table and a TTL
-cache, and there is a **fake-ip pool** (domain↔ip mapping over a CIDR range).
+A `dns:` block is parsed (`nameserver`, `fallback`, `fallback-filter`,
+`nameserver-policy`, `default-nameserver`, `enhanced-mode`, `fake-ip-range`,
+`fake-ip-filter`, `listen`, `hosts`). The resolver supports plain **UDP**,
+**DNS-over-HTTPS**, and **DNS-over-TLS** (`tls://host[:port]`, port 853, on the
+in-tree TLS 1.3 client; a DoT server's own hostname bootstraps through the UDP
+`default-nameserver`s), with a `hosts` table and a TTL cache.
+
+`nameserver-policy` routes matching domains (exact, `+.x` / `*.x` / `.x`
+patterns) to dedicated servers. When `fallback` servers are configured they are
+raced against the primaries, and the fallback answer wins when the
+`fallback-filter` distrusts the primary one: an answer inside
+`fallback-filter.ipcidr` is treated as poisoned, domains in
+`fallback-filter.domain` skip the primaries entirely, and with
+`fallback-filter.geoip` (default on) answers outside `geoip-code` (default
+`CN`) prefer the fallback — the geoip check needs `geoip.dat`, which the
+runtime downloads automatically when the filter is active.
 
 When `dns.enable` is set, a domain target is resolved before routing so
 `IP-CIDR`/`GEOIP` rules apply to it (respecting per-rule `no-resolve`);
-resolution only runs when such a rule is present. fake-ip mode integration and
-DoT are the next steps.
+resolution only runs when such a rule is present. In **fake-ip** mode
+(`enhanced-mode: fake-ip` + `dns.listen`), a built-in UDP DNS server hands out
+fake IPs and the proxy reverse-maps them to domains before routing/dialing.
 
 WebSocket/gRPC transports, UDP relay, and additional protocols (Shadowsocks,
 Trojan, Hysteria2, WireGuard) are planned for later phases.
