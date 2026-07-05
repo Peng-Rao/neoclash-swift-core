@@ -73,6 +73,17 @@ public struct SwiftCoreCommand: Equatable, Sendable {
     public static let usage = "Usage: neoclash-swift-core [-t] -f <config.yaml> -d <runtimeDir>"
 }
 
+/// WebSocket transport options (`ws-opts`).
+public struct SwiftCoreWSOpts: Equatable, Sendable {
+    public var path: String
+    public var headers: [String: String]
+
+    public init(path: String = "/", headers: [String: String] = [:]) {
+        self.path = path
+        self.headers = headers
+    }
+}
+
 public struct SwiftCoreProxy: Equatable, Sendable {
     public var name: String
     public var type: String
@@ -90,6 +101,7 @@ public struct SwiftCoreProxy: Equatable, Sendable {
     public var clientFingerprint: String?
     public var realityPublicKey: String?
     public var realityShortId: String?
+    public var wsOpts: SwiftCoreWSOpts?
 
     public init(
         name: String,
@@ -107,7 +119,8 @@ public struct SwiftCoreProxy: Equatable, Sendable {
         flow: String? = nil,
         clientFingerprint: String? = nil,
         realityPublicKey: String? = nil,
-        realityShortId: String? = nil
+        realityShortId: String? = nil,
+        wsOpts: SwiftCoreWSOpts? = nil
     ) {
         self.name = name
         self.type = type
@@ -125,6 +138,7 @@ public struct SwiftCoreProxy: Equatable, Sendable {
         self.clientFingerprint = clientFingerprint
         self.realityPublicKey = realityPublicKey
         self.realityShortId = realityShortId
+        self.wsOpts = wsOpts
     }
 }
 
@@ -445,6 +459,13 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
             case let value as Int: shortId = String(value)
             default: shortId = nil
             }
+            let wsOpts: SwiftCoreWSOpts?
+            if let ws = entry["ws-opts"] as? [String: Any] {
+                let headers = (ws["headers"] as? [String: Any])?.compactMapValues { $0 as? String } ?? [:]
+                wsOpts = SwiftCoreWSOpts(path: (ws["path"] as? String) ?? "/", headers: headers)
+            } else {
+                wsOpts = nil
+            }
             return SwiftCoreProxy(
                 name: name,
                 type: (entry["type"] as? String) ?? "unknown",
@@ -461,7 +482,8 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
                 flow: entry["flow"] as? String,
                 clientFingerprint: entry["client-fingerprint"] as? String,
                 realityPublicKey: reality?["public-key"] as? String,
-                realityShortId: shortId
+                realityShortId: shortId,
+                wsOpts: wsOpts
             )
         }
     }

@@ -12,6 +12,7 @@ final class SwiftCoreVMessOutbound: SwiftCoreOutbound, @unchecked Sendable {
     private let cmdKey: [UInt8]
     private let security: SwiftCoreVMessSecurity
     private let tls: SwiftCoreTLSTransport?
+    private let transport: SwiftCoreStreamTransport
 
     init(proxy: SwiftCoreProxy) throws {
         guard let server = proxy.server, !server.isEmpty else {
@@ -26,10 +27,7 @@ final class SwiftCoreVMessOutbound: SwiftCoreOutbound, @unchecked Sendable {
         if let alterId = proxy.alterId, alterId != 0 {
             throw SwiftCoreError.invalidConfig("vmess proxy \(proxy.name) alterId \(alterId) is not supported (AEAD/0 only).")
         }
-        let network = (proxy.network ?? "tcp").lowercased()
-        guard network == "tcp" else {
-            throw SwiftCoreError.invalidConfig("vmess proxy \(proxy.name) network '\(network)' is not supported (tcp only).")
-        }
+        self.transport = try SwiftCoreStreamTransport.make(proxy: proxy)
         switch (proxy.cipher ?? "auto").lowercased() {
         case "auto", "aes-128-gcm":
             self.security = .aesGCM
@@ -61,6 +59,7 @@ final class SwiftCoreVMessOutbound: SwiftCoreOutbound, @unchecked Sendable {
         let cmdKey = self.cmdKey
         let security = self.security
         let tls = self.tls
+        let transport = self.transport
         return ClientBootstrap(group: group)
             .channelOption(.socketOption(.so_reuseaddr), value: 1)
             .channelInitializer { channel in
@@ -68,6 +67,7 @@ final class SwiftCoreVMessOutbound: SwiftCoreOutbound, @unchecked Sendable {
                     if let tls {
                         try channel.pipeline.syncOperations.addHandler(tls.makeHandler())
                     }
+                    try transport.addHandler(to: channel)
                     let session = SwiftCoreVMessSession(cmdKey: cmdKey, security: security, request: request)
                     try channel.pipeline.syncOperations.addHandler(SwiftCoreVMessClientHandler(session: session))
                     try channel.pipeline.syncOperations.addHandler(makeTailHandler())
