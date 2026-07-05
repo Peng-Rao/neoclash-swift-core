@@ -43,7 +43,7 @@ final class SwiftCoreVMessOutbound: SwiftCoreOutbound, @unchecked Sendable {
         if proxy.tls {
             self.tls = try SwiftCoreTLSTransport(options: SwiftCoreTLSOptions(
                 serverName: proxy.servername ?? server,
-                alpn: proxy.alpn ?? [],
+                alpn: transport.forcedALPN ?? (proxy.alpn ?? []),
                 skipCertVerify: proxy.skipCertVerify
             ))
         } else {
@@ -60,6 +60,25 @@ final class SwiftCoreVMessOutbound: SwiftCoreOutbound, @unchecked Sendable {
         let security = self.security
         let tls = self.tls
         let transport = self.transport
+
+        // gRPC runs the VMess stream inside an HTTP/2 request stream, which is opened after connect.
+        if case .grpc(let grpc) = transport {
+            return grpc.connect(
+                host: server,
+                port: port,
+                group: group,
+                installSecurity: { channel in
+                    if let tls {
+                        try channel.pipeline.syncOperations.addHandler(tls.makeHandler())
+                    }
+                },
+                makeAppHandlers: {
+                    let session = SwiftCoreVMessSession(cmdKey: cmdKey, security: security, request: request)
+                    return [SwiftCoreVMessClientHandler(session: session), makeTailHandler()]
+                }
+            )
+        }
+
         return ClientBootstrap(group: group)
             .channelOption(.socketOption(.so_reuseaddr), value: 1)
             .channelInitializer { channel in
