@@ -40,6 +40,7 @@ public final class SwiftCoreState: @unchecked Sendable {
     private var geoDatabase: SwiftCoreGeoDatabase?
     private var ruleSet: SwiftCoreRuleSet?
     private var resolver: SwiftCoreDNSResolver?
+    private var fakeIPPool: SwiftCoreFakeIPPool?
 
     public init(configuration: SwiftCoreConfiguration) {
         self.configuration = configuration
@@ -348,6 +349,16 @@ public final class SwiftCoreState: @unchecked Sendable {
 
     public func setResolver(_ newResolver: SwiftCoreDNSResolver) {
         withLock { resolver = newResolver }
+    }
+
+    public func setFakeIPPool(_ pool: SwiftCoreFakeIPPool) {
+        withLock { fakeIPPool = pool }
+    }
+
+    /// If `host` is a live fake ip, the domain it maps back to (for connecting/routing by domain).
+    public func fakeIPDomain(forHost host: String) -> String? {
+        guard case .ipv4(let bytes) = SwiftCoreAddress.detect(host: host) else { return nil }
+        return withLock { fakeIPPool?.domain(forIPv4: bytes) }
     }
 
     /// Whether a domain target should be resolved before routing so IP-based rules can apply:

@@ -203,6 +203,12 @@ final class SwiftCoreMixedProxyHandler: ChannelInboundHandler, @unchecked Sendab
         clientSuccessBytes: ByteBuffer?,
         clientFailureBytes: ByteBuffer?
     ) {
+        // In fake-ip mode a connection to a fake ip is routed and dialed by its original domain.
+        var target = target
+        if let domain = state.fakeIPDomain(forHost: target.host) {
+            target = SwiftCoreProxyTarget(host: domain, port: target.port)
+        }
+
         mode = .connecting
         let clientChannel = context.channel
         let clientEventLoop = context.eventLoop

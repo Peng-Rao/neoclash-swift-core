@@ -174,6 +174,7 @@ public struct SwiftCoreRuleProvider: Equatable, Sendable {
 
 public struct SwiftCoreDNSConfig: Equatable, Sendable {
     public var enable: Bool
+    public var listen: String                // host:port for the DNS server (empty = disabled)
     public var enhancedMode: String          // "fake-ip", "redir-host", or "normal"
     public var fakeIPRange: String
     public var fakeIPFilter: [String]
@@ -184,6 +185,7 @@ public struct SwiftCoreDNSConfig: Equatable, Sendable {
 
     public init(
         enable: Bool = false,
+        listen: String = "",
         enhancedMode: String = "normal",
         fakeIPRange: String = "198.18.0.1/16",
         fakeIPFilter: [String] = [],
@@ -193,6 +195,7 @@ public struct SwiftCoreDNSConfig: Equatable, Sendable {
         hosts: [String: String] = [:]
     ) {
         self.enable = enable
+        self.listen = listen
         self.enhancedMode = enhancedMode
         self.fakeIPRange = fakeIPRange
         self.fakeIPFilter = fakeIPFilter
@@ -201,6 +204,9 @@ public struct SwiftCoreDNSConfig: Equatable, Sendable {
         self.defaultNameservers = defaultNameservers
         self.hosts = hosts
     }
+
+    /// Whether fake-ip enhanced mode is active.
+    public var isFakeIP: Bool { enable && enhancedMode.lowercased() == "fake-ip" }
 }
 
 public struct SwiftCoreConfiguration: Equatable, Sendable {
@@ -317,6 +323,7 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
         }
         return SwiftCoreDNSConfig(
             enable: (dns["enable"] as? Bool) ?? false,
+            listen: (dns["listen"] as? String) ?? "",
             enhancedMode: (dns["enhanced-mode"] as? String) ?? "normal",
             fakeIPRange: (dns["fake-ip-range"] as? String) ?? "198.18.0.1/16",
             fakeIPFilter: stringList(dns["fake-ip-filter"]),
