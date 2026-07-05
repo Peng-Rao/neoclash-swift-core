@@ -144,11 +144,13 @@ public struct SwiftCoreRule: Equatable, Sendable {
     public var type: String
     public var payload: String
     public var proxy: String
+    public var noResolve: Bool
 
-    public init(type: String, payload: String, proxy: String) {
+    public init(type: String, payload: String, proxy: String, noResolve: Bool = false) {
         self.type = type
         self.payload = payload
         self.proxy = proxy
+        self.noResolve = noResolve
     }
 }
 
@@ -436,7 +438,8 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
             guard parts.count >= 3 else {
                 return nil
             }
-            return SwiftCoreRule(type: parts[0].uppercased(), payload: parts[1], proxy: parts[2])
+            let noResolve = parts.count >= 4 && parts[3].lowercased() == "no-resolve"
+            return SwiftCoreRule(type: parts[0].uppercased(), payload: parts[1], proxy: parts[2], noResolve: noResolve)
         }
     }
 }

@@ -118,8 +118,11 @@ A `dns:` block is parsed (`nameserver`, `fallback`, `default-nameserver`,
 `enhanced-mode`, `fake-ip-range`, `fake-ip-filter`, `hosts`). The resolver
 supports plain **UDP** and **DNS-over-HTTPS**, with a `hosts` table and a TTL
 cache, and there is a **fake-ip pool** (domain↔ip mapping over a CIDR range).
-Wiring the resolver into the routing path (so IP/GEOIP rules apply to domains,
-and fake-ip mode) is the next step; DoT is not implemented yet.
+
+When `dns.enable` is set, a domain target is resolved before routing so
+`IP-CIDR`/`GEOIP` rules apply to it (respecting per-rule `no-resolve`);
+resolution only runs when such a rule is present. fake-ip mode integration and
+DoT are the next steps.
 
 WebSocket/gRPC transports, UDP relay, and additional protocols (Shadowsocks,
 Trojan, Hysteria2, WireGuard) are planned for later phases.
