@@ -69,7 +69,7 @@ public final class SwiftCoreState: @unchecked Sendable {
                     warnings.append("Proxy \(proxy.name) of type \(proxy.type) is not supported yet; routes using it will be rejected.")
                 }
             } catch {
-                warnings.append("Proxy \(proxy.name) is invalid: \(error.localizedDescription)")
+                warnings.append("Proxy \(proxy.name) is invalid: \(SwiftCoreErrorText.describe(error))")
             }
         }
         return (result, warnings)
@@ -254,21 +254,39 @@ public final class SwiftCoreState: @unchecked Sendable {
         }
     }
 
-    public func nextLogObject() -> [String: String] {
+    /// Returns every pending log entry (oldest first) and clears the queue. Returns an empty
+    /// array when idle — the log stream must stay silent rather than fabricate entries, or
+    /// clients render a junk line for every tick.
+    public func drainLogObjects() -> [[String: String]] {
         withLock {
-            if logs.isEmpty {
-                return ["type": "info", "payload": "Swift core heartbeat"]
-            }
-            return logs.removeFirst()
+            let drained = logs
+            logs.removeAll(keepingCapacity: true)
+            return drained
         }
     }
 
     public func appendLog(level: String, message: String) {
         withLock {
+            guard Self.logRank(level) >= Self.logRank(configuration.logLevel) else {
+                return
+            }
             logs.append(["type": level, "payload": message])
             if logs.count > 256 {
                 logs.removeFirst(logs.count - 256)
             }
+        }
+    }
+
+    /// mihomo's log-level ordering: everything at or above the configured level is kept.
+    /// Unknown levels rank as info so misspelled configs stay chatty rather than silent.
+    static func logRank(_ level: String) -> Int {
+        switch level.lowercased() {
+        case "debug": 0
+        case "info": 1
+        case "warning": 2
+        case "error": 3
+        case "silent": Int.max
+        default: 1
         }
     }
 
@@ -334,6 +352,30 @@ public final class SwiftCoreState: @unchecked Sendable {
                 switch rule.type.uppercased() {
                 case "GEOIP": geoip = true
                 case "GEOSITE": geosite = true
+                default: break
+                }
+            }
+            return (geoip, geosite)
+        }
+    }
+
+    /// Country/category codes referenced by GEOIP/GEOSITE rules, so the loader can skip
+    /// materializing the rest of the databases. Empty sets mean "load everything": classical
+    /// rule providers can carry geo rules whose codes are only known after download.
+    public func requiredGeoCodes() -> (geoip: Set<String>, geosite: Set<String>) {
+        withLock {
+            let hasClassicalProviders = configuration.ruleProviders.contains {
+                $0.behavior.lowercased() == "classical"
+            }
+            if hasClassicalProviders {
+                return ([], [])
+            }
+            var geoip: Set<String> = []
+            var geosite: Set<String> = []
+            for rule in configuration.rules {
+                switch rule.type.uppercased() {
+                case "GEOIP": geoip.insert(rule.payload.uppercased())
+                case "GEOSITE": geosite.insert(rule.payload.uppercased())
                 default: break
                 }
             }

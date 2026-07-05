@@ -76,8 +76,25 @@ final class SwiftCoreMixedProxyHandler: ChannelInboundHandler, @unchecked Sendab
         state.removeConnection(id: connectionID)
     }
 
+    /// Backpressure, download direction: this (client) channel's send buffer holds data relayed
+    /// from the upstream, and fills when the upstream outpaces a slow client — pause upstream
+    /// reads until it drains, otherwise the pending writes grow without bound.
+    func channelWritabilityChanged(context: ChannelHandlerContext) {
+        if let upstream {
+            let writable = context.channel.isWritable
+            upstream.eventLoop.execute {
+                _ = upstream.setOption(ChannelOptions.autoRead, value: writable)
+            }
+        }
+        context.fireChannelWritabilityChanged()
+    }
+
     func errorCaught(context: ChannelHandlerContext, error: Error) {
-        state.appendLog(level: "warning", message: "Mixed proxy error: \(error.localizedDescription)")
+        if SwiftCoreErrorText.isRoutineDisconnect(error) {
+            state.appendLog(level: "debug", message: "Client connection closed: \(SwiftCoreErrorText.describe(error))")
+        } else {
+            state.appendLog(level: "warning", message: "Mixed proxy error: \(SwiftCoreErrorText.describe(error))")
+        }
         close(context: context)
     }
 
@@ -251,7 +268,7 @@ final class SwiftCoreMixedProxyHandler: ChannelInboundHandler, @unchecked Sendab
                     }
                     clientChannel.setOption(ChannelOptions.autoRead, value: true).whenComplete { _ in }
                 case .failure(let error):
-                    self.state.appendLog(level: "warning", message: "Failed to connect \(target.host):\(target.port) via \(outbound.name): \(error.localizedDescription)")
+                    self.state.appendLog(level: "warning", message: "Failed to connect \(target.host):\(target.port) via \(outbound.name): \(SwiftCoreErrorText.describe(error))")
                     if let failure = clientFailureBytes {
                         clientChannel.writeAndFlush(failure, promise: nil)
                     }
@@ -378,6 +395,19 @@ final class SwiftCoreUpstreamHandler: ChannelInboundHandler, @unchecked Sendable
             }
         }
         state.removeConnection(id: connectionIDRef.value)
+    }
+
+    /// Backpressure, upload direction: this (upstream) channel's send buffer holds data relayed
+    /// from the client, and fills when the client outpaces a slow upstream — pause client reads
+    /// until it drains.
+    func channelWritabilityChanged(context: ChannelHandlerContext) {
+        if let client {
+            let writable = context.channel.isWritable
+            client.eventLoop.execute {
+                _ = client.setOption(ChannelOptions.autoRead, value: writable)
+            }
+        }
+        context.fireChannelWritabilityChanged()
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {

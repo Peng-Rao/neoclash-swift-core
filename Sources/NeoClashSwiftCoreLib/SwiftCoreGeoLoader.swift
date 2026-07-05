@@ -13,14 +13,27 @@ final class SwiftCoreGeoLoader: @unchecked Sendable {
     private let geositeURL: String
     private let needsGeoIP: Bool
     private let needsGeoSite: Bool
+    private let geoipCodes: Set<String>
+    private let geositeCodes: Set<String>
 
-    init(state: SwiftCoreState, directory: String, geoipURL: String, geositeURL: String, needsGeoIP: Bool, needsGeoSite: Bool) {
+    init(
+        state: SwiftCoreState,
+        directory: String,
+        geoipURL: String,
+        geositeURL: String,
+        needsGeoIP: Bool,
+        needsGeoSite: Bool,
+        geoipCodes: Set<String> = [],
+        geositeCodes: Set<String> = []
+    ) {
         self.state = state
         self.directory = directory
         self.geoipURL = geoipURL
         self.geositeURL = geositeURL
         self.needsGeoIP = needsGeoIP
         self.needsGeoSite = needsGeoSite
+        self.geoipCodes = geoipCodes
+        self.geositeCodes = geositeCodes
     }
 
     func start() {
@@ -32,13 +45,13 @@ final class SwiftCoreGeoLoader: @unchecked Sendable {
     func load() async {
         var geoip: SwiftCoreGeoIP?
         if needsGeoIP, let data = await fetch(url: geoipURL, filename: "geoip.dat") {
-            let parsed = SwiftCoreGeoIP(data: data)
+            let parsed = SwiftCoreGeoIP(data: data, codes: geoipCodes)
             geoip = parsed
             state.appendLog(level: "info", message: "Loaded geoip.dat (\(parsed.countryCount) countries)")
         }
         var geosite: SwiftCoreGeoSite?
         if needsGeoSite, let data = await fetch(url: geositeURL, filename: "geosite.dat") {
-            let parsed = SwiftCoreGeoSite(data: data)
+            let parsed = SwiftCoreGeoSite(data: data, codes: geositeCodes)
             geosite = parsed
             state.appendLog(level: "info", message: "Loaded geosite.dat (\(parsed.countryCount) categories)")
         }
@@ -47,11 +60,14 @@ final class SwiftCoreGeoLoader: @unchecked Sendable {
         }
     }
 
-    /// Returns the file bytes, preferring a cached copy in the runtime directory before downloading.
-    private func fetch(url: String, filename: String) async -> [UInt8]? {
+    /// Returns the file bytes, preferring a cached copy in the runtime directory before
+    /// downloading. The cache is memory-mapped rather than read: the parser only slices the
+    /// buffer, so a mapped multi-MB `.dat` stays file-backed (clean, evictable pages) instead
+    /// of being copied onto the heap.
+    private func fetch(url: String, filename: String) async -> Data? {
         let path = directory + "/" + filename
-        if let data = FileManager.default.contents(atPath: path), !data.isEmpty {
-            return Array(data)
+        if let data = mapped(path: path) {
+            return data
         }
         guard let endpoint = URL(string: url) else {
             state.appendLog(level: "warning", message: "invalid geo url: \(url)")
@@ -66,10 +82,19 @@ final class SwiftCoreGeoLoader: @unchecked Sendable {
             try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
             try? data.write(to: URL(fileURLWithPath: path))
             state.appendLog(level: "info", message: "Downloaded \(filename) (\(data.count) bytes)")
-            return Array(data)
+            // Re-map the freshly written cache so parsing releases the download buffer too.
+            return mapped(path: path) ?? data
         } catch {
-            state.appendLog(level: "warning", message: "geo download failed \(url): \(error.localizedDescription)")
+            state.appendLog(level: "warning", message: "geo download failed \(url): \(SwiftCoreErrorText.describe(error))")
             return nil
         }
+    }
+
+    private func mapped(path: String) -> Data? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: .alwaysMapped),
+              !data.isEmpty else {
+            return nil
+        }
+        return data
     }
 }

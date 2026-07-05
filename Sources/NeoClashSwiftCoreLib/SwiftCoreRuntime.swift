@@ -39,7 +39,9 @@ public final class SwiftCoreRuntimeSession: @unchecked Sendable {
     private var ruleProviderLoader: SwiftCoreRuleProviderLoader?
     private var stopped = false
 
-    public init(configuration: SwiftCoreConfiguration, runtimeDirectory: String? = nil, numberOfThreads: Int = max(2, System.coreCount)) {
+    /// A loopback proxy saturates long before it needs an event loop per core, and each extra
+    /// NIO thread carries its own stack and allocator caches — cap the default at four.
+    public init(configuration: SwiftCoreConfiguration, runtimeDirectory: String? = nil, numberOfThreads: Int = max(2, min(4, System.coreCount))) {
         self.state = SwiftCoreState(configuration: configuration)
         self.group = MultiThreadedEventLoopGroup(numberOfThreads: numberOfThreads)
         self.runtimeDirectory = runtimeDirectory
@@ -68,13 +70,16 @@ public final class SwiftCoreRuntimeSession: @unchecked Sendable {
         guard let runtimeDirectory else { return }
         let required = state.requiresGeoData()
         guard required.geoip || required.geosite else { return }
+        let codes = state.requiredGeoCodes()
         let loader = SwiftCoreGeoLoader(
             state: state,
             directory: runtimeDirectory,
             geoipURL: state.geoipURL,
             geositeURL: state.geositeURL,
             needsGeoIP: required.geoip,
-            needsGeoSite: required.geosite
+            needsGeoSite: required.geosite,
+            geoipCodes: codes.geoip,
+            geositeCodes: codes.geosite
         )
         loader.start()
         geoLoader = loader
@@ -119,7 +124,7 @@ public enum SwiftCoreMain {
             return 0
         } catch {
             // Avoid the global C `stderr` (flagged as non-concurrency-safe on Linux/Glibc).
-            FileHandle.standardError.write(Data("\(error.localizedDescription)\n".utf8))
+            FileHandle.standardError.write(Data("\(SwiftCoreErrorText.describe(error))\n".utf8))
             return 1
         }
     }

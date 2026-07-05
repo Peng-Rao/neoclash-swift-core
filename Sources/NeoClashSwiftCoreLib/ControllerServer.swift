@@ -82,7 +82,11 @@ final class SwiftCoreHTTPControllerHandler: ChannelInboundHandler, RemovableChan
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
-        state.appendLog(level: "warning", message: "Controller error: \(error.localizedDescription)")
+        if SwiftCoreErrorText.isRoutineDisconnect(error) {
+            state.appendLog(level: "debug", message: "Controller connection closed: \(SwiftCoreErrorText.describe(error))")
+        } else {
+            state.appendLog(level: "warning", message: "Controller error: \(SwiftCoreErrorText.describe(error))")
+        }
         context.close(promise: nil)
     }
 
@@ -146,7 +150,7 @@ final class SwiftCoreHTTPControllerHandler: ChannelInboundHandler, RemovableChan
                 send(status: .notFound, object: ["error": "not found"], context: context)
             }
         } catch {
-            send(status: .badRequest, object: ["error": error.localizedDescription], context: context)
+            send(status: .badRequest, object: ["error": SwiftCoreErrorText.describe(error)], context: context)
         }
     }
 
@@ -256,22 +260,38 @@ final class SwiftCoreWebSocketHandler: ChannelInboundHandler, @unchecked Sendabl
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
         repeatedTask?.cancel()
-        state.appendLog(level: "warning", message: "WebSocket error: \(error.localizedDescription)")
+        if SwiftCoreErrorText.isRoutineDisconnect(error) {
+            state.appendLog(level: "debug", message: "WebSocket connection closed: \(SwiftCoreErrorText.describe(error))")
+        } else {
+            state.appendLog(level: "warning", message: "WebSocket error: \(SwiftCoreErrorText.describe(error))")
+        }
         context.close(promise: nil)
     }
 
     private func sendSnapshot(channel: Channel) {
-        let object: Any
         switch path {
-        case "/traffic":
-            object = state.trafficObjectAndReset()
         case "/logs":
-            object = state.nextLogObject()
+            let entries = state.drainLogObjects()
+            guard !entries.isEmpty else {
+                // Stay silent when idle — a protocol-level ping keeps the socket alive
+                // without clients rendering a junk log line every tick.
+                let ping = WebSocketFrame(fin: true, opcode: .ping, data: channel.allocator.buffer(capacity: 0))
+                channel.writeAndFlush(ping, promise: nil)
+                return
+            }
+            for entry in entries {
+                send(object: entry, channel: channel)
+            }
+        case "/traffic":
+            send(object: state.trafficObjectAndReset(), channel: channel)
         case "/connections":
-            object = state.connectionsObject()
+            send(object: state.connectionsObject(), channel: channel)
         default:
-            object = ["type": "warning", "payload": "unknown stream"]
+            send(object: ["type": "warning", "payload": "unknown stream"], channel: channel)
         }
+    }
+
+    private func send(object: Any, channel: Channel) {
         let buffer = channel.allocator.buffer(string: SwiftCoreJSON.string(object))
         channel.writeAndFlush(WebSocketFrame(fin: true, opcode: .text, data: buffer), promise: nil)
     }
