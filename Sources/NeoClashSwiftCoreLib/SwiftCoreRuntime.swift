@@ -64,6 +64,8 @@ public final class SwiftCoreRuntimeSession: @unchecked Sendable {
             if state.dnsEnabled {
                 let dns = state.dnsConfig()
                 let resolver = SwiftCoreDNSResolver(config: dns, group: group)
+                // Weak: state retains the resolver; geo data may finish loading after startup.
+                resolver.setGeoIPProvider { [weak state = self.state] in state?.currentGeoIP() }
                 state.setResolver(resolver)
                 startDNSServerIfNeeded(dns: dns, resolver: resolver)
             }
