@@ -84,6 +84,15 @@ public struct SwiftCoreWSOpts: Equatable, Sendable {
     }
 }
 
+/// gRPC transport options (`grpc-opts`).
+public struct SwiftCoreGRPCOpts: Equatable, Sendable {
+    public var serviceName: String
+
+    public init(serviceName: String = "GunService") {
+        self.serviceName = serviceName
+    }
+}
+
 public struct SwiftCoreProxy: Equatable, Sendable {
     public var name: String
     public var type: String
@@ -102,6 +111,7 @@ public struct SwiftCoreProxy: Equatable, Sendable {
     public var realityPublicKey: String?
     public var realityShortId: String?
     public var wsOpts: SwiftCoreWSOpts?
+    public var grpcOpts: SwiftCoreGRPCOpts?
 
     public init(
         name: String,
@@ -120,7 +130,8 @@ public struct SwiftCoreProxy: Equatable, Sendable {
         clientFingerprint: String? = nil,
         realityPublicKey: String? = nil,
         realityShortId: String? = nil,
-        wsOpts: SwiftCoreWSOpts? = nil
+        wsOpts: SwiftCoreWSOpts? = nil,
+        grpcOpts: SwiftCoreGRPCOpts? = nil
     ) {
         self.name = name
         self.type = type
@@ -139,6 +150,7 @@ public struct SwiftCoreProxy: Equatable, Sendable {
         self.realityPublicKey = realityPublicKey
         self.realityShortId = realityShortId
         self.wsOpts = wsOpts
+        self.grpcOpts = grpcOpts
     }
 }
 
@@ -466,6 +478,12 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
             } else {
                 wsOpts = nil
             }
+            let grpcOpts: SwiftCoreGRPCOpts?
+            if let grpc = entry["grpc-opts"] as? [String: Any] {
+                grpcOpts = SwiftCoreGRPCOpts(serviceName: (grpc["grpc-service-name"] as? String) ?? "GunService")
+            } else {
+                grpcOpts = nil
+            }
             return SwiftCoreProxy(
                 name: name,
                 type: (entry["type"] as? String) ?? "unknown",
@@ -483,7 +501,8 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
                 clientFingerprint: entry["client-fingerprint"] as? String,
                 realityPublicKey: reality?["public-key"] as? String,
                 realityShortId: shortId,
-                wsOpts: wsOpts
+                wsOpts: wsOpts,
+                grpcOpts: grpcOpts
             )
         }
     }

@@ -37,6 +37,9 @@ final class SwiftCoreVLESSOutbound: SwiftCoreOutbound, @unchecked Sendable {
         self.uuid = try SwiftCoreProxyEncoding.parseUUID(uuidString)
 
         if let realityPublicKey = proxy.realityPublicKey {
+            guard !transport.isChildStream else {
+                throw SwiftCoreError.invalidConfig("vless proxy \(proxy.name) reality is not supported over gRPC.")
+            }
             guard SwiftCoreRealityCrypto.base64URLDecode(realityPublicKey)?.count == 32 else {
                 throw SwiftCoreError.invalidConfig("vless proxy \(proxy.name) reality public-key must decode to 32 bytes.")
             }
@@ -49,7 +52,7 @@ final class SwiftCoreVLESSOutbound: SwiftCoreOutbound, @unchecked Sendable {
         } else if proxy.tls {
             self.security = .standardTLS(try SwiftCoreTLSTransport(options: SwiftCoreTLSOptions(
                 serverName: proxy.servername ?? server,
-                alpn: proxy.alpn ?? [],
+                alpn: transport.forcedALPN ?? (proxy.alpn ?? []),
                 skipCertVerify: proxy.skipCertVerify
             )))
         } else {
@@ -60,6 +63,9 @@ final class SwiftCoreVLESSOutbound: SwiftCoreOutbound, @unchecked Sendable {
         let vision = (proxy.flow?.lowercased() == "xtls-rprx-vision")
         if vision, case .none = self.security {
             throw SwiftCoreError.invalidConfig("vless proxy \(proxy.name) flow \(proxy.flow ?? "") requires TLS or REALITY.")
+        }
+        if vision, transport.isChildStream {
+            throw SwiftCoreError.invalidConfig("vless proxy \(proxy.name) flow \(proxy.flow ?? "") is only supported over tcp.")
         }
         self.visionEnabled = vision
     }
@@ -74,6 +80,24 @@ final class SwiftCoreVLESSOutbound: SwiftCoreOutbound, @unchecked Sendable {
         let transport = self.transport
         let flow = self.flow
         let visionEnabled = self.visionEnabled
+
+        // gRPC runs the VLESS stream inside an HTTP/2 request stream, which is opened after connect.
+        if case .grpc(let grpc) = transport {
+            return grpc.connect(
+                host: server,
+                port: port,
+                group: group,
+                installSecurity: { channel in
+                    if case .standardTLS(let tls) = security {
+                        try channel.pipeline.syncOperations.addHandler(tls.makeHandler())
+                    }
+                },
+                makeAppHandlers: {
+                    [SwiftCoreVLESSClientHandler(uuid: uuid, request: request, flow: flow), makeTailHandler()]
+                }
+            )
+        }
+
         return ClientBootstrap(group: group)
             .channelOption(.socketOption(.so_reuseaddr), value: 1)
             .channelInitializer { channel in
