@@ -139,4 +139,85 @@ final class RuleSetTests: XCTestCase {
         let decision = state.route(context: SwiftCoreRouteContext(host: "x.blocked.example", destinationPort: 0))
         if case .reject = decision {} else { XCTFail("expected REJECT via RULE-SET, got \(decision)") }
     }
+
+    // MARK: Loader edge cases
+
+    private func makeLoaderState() throws -> SwiftCoreState {
+        let yaml = """
+        mixed-port: 7890
+        secret: s
+        proxies:
+          - { name: P, type: direct }
+        proxy-groups:
+          - { name: G, type: select, proxies: [P, DIRECT] }
+        rules:
+          - RULE-SET,ads,REJECT
+          - MATCH,P
+        """
+        return SwiftCoreState(configuration: try SwiftCoreConfiguration.parse(yaml: yaml))
+    }
+
+    private func makeLoaderDirectory() throws -> String {
+        let directory = NSTemporaryDirectory() + "neoclash-ruleset-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    func testLoaderSkipsMissingProviderFile() async throws {
+        let directory = try makeLoaderDirectory()
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+
+        let state = try makeLoaderState()
+        let loader = SwiftCoreRuleProviderLoader(
+            state: state,
+            directory: directory,
+            providers: [SwiftCoreRuleProvider(name: "ads", type: "file", behavior: "domain", path: "missing.yaml")]
+        )
+        await loader.load()
+
+        // Nothing installed: the RULE-SET rule falls through to MATCH,P.
+        guard case .outbound(let chain, _) = state.route(context: SwiftCoreRouteContext(host: "x.blocked.example", destinationPort: 0)) else {
+            return XCTFail("expected fallthrough to MATCH,P")
+        }
+        XCTAssertEqual(chain.last, "P")
+        let logs = state.drainLogObjects().map { $0["payload"] ?? "" }
+        XCTAssertTrue(logs.contains { $0.contains("file not found") }, "\(logs)")
+    }
+
+    func testLoaderPrefersCachedHTTPDownload() async throws {
+        // A text-format http provider without an explicit path caches at ruleset-<name>.txt;
+        // when the cache exists the loader must serve it without touching the network.
+        let directory = try makeLoaderDirectory()
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        try "# ads\n+.blocked.example\n".write(toFile: directory + "/ruleset-ads.txt", atomically: true, encoding: .utf8)
+
+        let state = try makeLoaderState()
+        let loader = SwiftCoreRuleProviderLoader(
+            state: state,
+            directory: directory,
+            providers: [SwiftCoreRuleProvider(name: "ads", type: "http", behavior: "domain", url: "http://invalid.invalid/ads.txt", format: "text")]
+        )
+        await loader.load()
+
+        let decision = state.route(context: SwiftCoreRouteContext(host: "x.blocked.example", destinationPort: 0))
+        if case .reject = decision {} else { XCTFail("expected REJECT via cached provider, got \(decision)") }
+    }
+
+    func testLoaderWarnsForMissingURLAndUnsupportedBehavior() async throws {
+        let directory = try makeLoaderDirectory()
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let absolutePath = directory + "/abs.yaml"
+        try "payload:\n  - \"+.blocked.example\"\n".write(toFile: absolutePath, atomically: true, encoding: .utf8)
+
+        let state = try makeLoaderState()
+        let loader = SwiftCoreRuleProviderLoader(state: state, directory: directory, providers: [
+            SwiftCoreRuleProvider(name: "nourl", type: "http", behavior: "domain"),
+            SwiftCoreRuleProvider(name: "ads", type: "file", behavior: "bogus", path: absolutePath)
+        ])
+        await loader.load()
+
+        let logs = state.drainLogObjects().map { $0["payload"] ?? "" }
+        XCTAssertTrue(logs.contains { $0.contains("missing or invalid url") }, "\(logs)")
+        XCTAssertTrue(logs.contains { $0.contains("unsupported behavior 'bogus'") }, "\(logs)")
+    }
 }
