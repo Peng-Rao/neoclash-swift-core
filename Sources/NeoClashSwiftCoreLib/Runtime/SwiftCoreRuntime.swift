@@ -38,6 +38,7 @@ public final class SwiftCoreRuntimeSession: @unchecked Sendable {
     private var geoLoader: SwiftCoreGeoLoader?
     private var ruleProviderLoader: SwiftCoreRuleProviderLoader?
     private var dnsServer: SwiftCoreDNSServer?
+    private var tunController: SwiftCoreTunController?
     private var stopped = false
 
     /// A loopback proxy saturates long before it needs an event loop per core, and each extra
@@ -68,6 +69,11 @@ public final class SwiftCoreRuntimeSession: @unchecked Sendable {
                 resolver.setGeoIPProvider { [weak state = self.state] in state?.currentGeoIP() }
                 state.setResolver(resolver)
                 startDNSServerIfNeeded(dns: dns, resolver: resolver)
+            }
+            if state.tunEnabled {
+                let controller = SwiftCoreTunController(state: state)
+                controller.start(config: state.tunConfig())
+                tunController = controller
             }
         } catch {
             stop()
@@ -142,6 +148,8 @@ public final class SwiftCoreRuntimeSession: @unchecked Sendable {
         stopped = true
         healthMonitor?.stop()
         healthMonitor = nil
+        tunController?.stop()
+        tunController = nil
         dnsServer?.stop()
         dnsServer = nil
         try? controller?.close().wait()

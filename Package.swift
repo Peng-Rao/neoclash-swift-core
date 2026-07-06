@@ -20,8 +20,13 @@ let package = Package(
     ],
     targets: [
         .target(
+            name: "CSwiftCoreTun",
+            path: "Sources/CSwiftCoreTun"
+        ),
+        .target(
             name: "NeoClashSwiftCoreLib",
             dependencies: [
+                "CSwiftCoreTun",
                 .product(name: "Yams", package: "Yams"),
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOHTTP1", package: "swift-nio"),
