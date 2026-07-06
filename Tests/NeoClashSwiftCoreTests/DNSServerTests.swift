@@ -43,7 +43,8 @@ final class DNSServerTests: XCTestCase {
         // The server resolves filtered domains for real; give it a hosts entry so it's hermetic.
         let serverResolver = SwiftCoreDNSResolver(config: SwiftCoreDNSConfig(hosts: ["router.local": "10.0.0.1"]), group: group)
         let filter = SwiftCoreFakeIPFilter(patterns: ["+.local"])
-        let server = SwiftCoreDNSServer(state: state, pool: pool, resolver: serverResolver, filter: filter, group: group)
+        let responder = SwiftCoreDNSResponder(pool: pool, resolver: serverResolver, filter: filter)
+        let server = SwiftCoreDNSServer(state: state, responder: responder, group: group)
         let channel = try server.start(host: "127.0.0.1", port: 0)
         let port = try XCTUnwrap(channel.localAddress?.port)
 

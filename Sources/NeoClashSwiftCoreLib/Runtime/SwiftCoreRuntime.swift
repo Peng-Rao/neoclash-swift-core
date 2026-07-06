@@ -38,6 +38,7 @@ public final class SwiftCoreRuntimeSession: @unchecked Sendable {
     private var geoLoader: SwiftCoreGeoLoader?
     private var ruleProviderLoader: SwiftCoreRuleProviderLoader?
     private var dnsServer: SwiftCoreDNSServer?
+    private var dnsResponder: SwiftCoreDNSResponder?
     private var tunController: SwiftCoreTunController?
     private var stopped = false
 
@@ -68,11 +69,21 @@ public final class SwiftCoreRuntimeSession: @unchecked Sendable {
                 // Weak: state retains the resolver; geo data may finish loading after startup.
                 resolver.setGeoIPProvider { [weak state = self.state] in state?.currentGeoIP() }
                 state.setResolver(resolver)
-                startDNSServerIfNeeded(dns: dns, resolver: resolver)
+                let pool = dns.isFakeIP ? SwiftCoreFakeIPPool(cidr: dns.fakeIPRange) : nil
+                if let pool { state.setFakeIPPool(pool) }
+                let responder = SwiftCoreDNSResponder(pool: pool, resolver: resolver, filter: SwiftCoreFakeIPFilter(patterns: dns.fakeIPFilter))
+                dnsResponder = responder
+                startDNSServerIfNeeded(dns: dns, responder: responder)
             }
             if state.tunEnabled {
-                let controller = SwiftCoreTunController(state: state, group: group)
-                controller.start(config: state.tunConfig())
+                let tun = state.tunConfig()
+                let controller = SwiftCoreTunController(
+                    state: state,
+                    group: group,
+                    dnsResponder: dnsResponder,
+                    dnsHijack: SwiftCoreDNSHijackTarget.parse(tun.dnsHijack)
+                )
+                controller.start(config: tun)
                 tunController = controller
             }
         } catch {
@@ -100,10 +111,9 @@ public final class SwiftCoreRuntimeSession: @unchecked Sendable {
         geoLoader = loader
     }
 
-    /// In fake-ip mode, build the shared pool and (if `dns.listen` is set) start the DNS server.
-    private func startDNSServerIfNeeded(dns: SwiftCoreDNSConfig, resolver: SwiftCoreDNSResolver) {
-        guard dns.isFakeIP, let pool = SwiftCoreFakeIPPool(cidr: dns.fakeIPRange) else { return }
-        state.setFakeIPPool(pool)
+    /// In fake-ip mode, start the UDP DNS server when `dns.listen` is set.
+    private func startDNSServerIfNeeded(dns: SwiftCoreDNSConfig, responder: SwiftCoreDNSResponder) {
+        guard dns.isFakeIP else { return }
         let listen = dns.listen.trimmingCharacters(in: .whitespaces)
         guard !listen.isEmpty else { return }
         let host: String
@@ -115,8 +125,7 @@ public final class SwiftCoreRuntimeSession: @unchecked Sendable {
             host = listen
             port = 53
         }
-        let filter = SwiftCoreFakeIPFilter(patterns: dns.fakeIPFilter)
-        let server = SwiftCoreDNSServer(state: state, pool: pool, resolver: resolver, filter: filter, group: group)
+        let server = SwiftCoreDNSServer(state: state, responder: responder, group: group)
         do {
             try server.start(host: host.isEmpty ? "0.0.0.0" : host, port: port)
             dnsServer = server
