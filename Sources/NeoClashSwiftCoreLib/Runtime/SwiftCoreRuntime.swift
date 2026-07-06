@@ -71,7 +71,7 @@ public final class SwiftCoreRuntimeSession: @unchecked Sendable {
                 startDNSServerIfNeeded(dns: dns, resolver: resolver)
             }
             if state.tunEnabled {
-                let controller = SwiftCoreTunController(state: state)
+                let controller = SwiftCoreTunController(state: state, group: group)
                 controller.start(config: state.tunConfig())
                 tunController = controller
             }
