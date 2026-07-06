@@ -352,6 +352,9 @@ public final class SwiftCoreState: @unchecked Sendable {
     public var dnsEnabled: Bool { withLock { configuration.dns.enable } }
     public func dnsConfig() -> SwiftCoreDNSConfig { withLock { configuration.dns } }
 
+    public var tunEnabled: Bool { withLock { configuration.tun.enable } }
+    public func tunConfig() -> SwiftCoreTUNConfig { withLock { configuration.tun } }
+
     public func setResolver(_ newResolver: SwiftCoreDNSResolver) {
         withLock { resolver = newResolver }
     }

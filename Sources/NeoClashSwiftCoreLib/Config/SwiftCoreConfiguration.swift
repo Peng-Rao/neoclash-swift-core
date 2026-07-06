@@ -268,6 +268,36 @@ public struct SwiftCoreDNSConfig: Equatable, Sendable {
     public var isFakeIP: Bool { enable && enhancedMode.lowercased() == "fake-ip" }
 }
 
+/// TUN inbound options (`tun:`). The network stack that turns captured packets into proxied flows
+/// is a later step; `stack`/`autoRoute`/`dnsHijack` are parsed now but not yet enforced.
+public struct SwiftCoreTUNConfig: Equatable, Sendable {
+    public var enable: Bool
+    public var device: String        // "" = kernel-assigned (utunN / tunN)
+    public var mtu: Int
+    public var address: [String]     // interface addresses, e.g. ["198.18.0.1/30"]
+    public var stack: String         // "system" / "gvisor" / "mixed" (informational for now)
+    public var autoRoute: Bool
+    public var dnsHijack: [String]
+
+    public init(
+        enable: Bool = false,
+        device: String = "",
+        mtu: Int = 9000,
+        address: [String] = [],
+        stack: String = "system",
+        autoRoute: Bool = true,
+        dnsHijack: [String] = []
+    ) {
+        self.enable = enable
+        self.device = device
+        self.mtu = mtu
+        self.address = address
+        self.stack = stack
+        self.autoRoute = autoRoute
+        self.dnsHijack = dnsHijack
+    }
+}
+
 public struct SwiftCoreConfiguration: Equatable, Sendable {
     public var mixedPort: Int
     public var controllerHost: String
@@ -281,6 +311,7 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
     public var rules: [SwiftCoreRule]
     public var ruleProviders: [SwiftCoreRuleProvider]
     public var dns: SwiftCoreDNSConfig
+    public var tun: SwiftCoreTUNConfig
     public var geoipURL: String
     public var geositeURL: String
 
@@ -300,6 +331,7 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
         rules: [SwiftCoreRule],
         ruleProviders: [SwiftCoreRuleProvider] = [],
         dns: SwiftCoreDNSConfig = SwiftCoreDNSConfig(),
+        tun: SwiftCoreTUNConfig = SwiftCoreTUNConfig(),
         geoipURL: String = SwiftCoreConfiguration.defaultGeoIPURL,
         geositeURL: String = SwiftCoreConfiguration.defaultGeoSiteURL
     ) {
@@ -315,6 +347,7 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
         self.rules = rules
         self.ruleProviders = ruleProviders
         self.dns = dns
+        self.tun = tun
         self.geoipURL = geoipURL
         self.geositeURL = geositeURL
     }
@@ -345,6 +378,7 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
         let rules = parseRules(root["rules"])
         let ruleProviders = parseRuleProviders(root["rule-providers"])
         let dns = parseDNS(root["dns"], hosts: root["hosts"])
+        let tun = parseTUN(root["tun"])
         let geox = root["geox-url"] as? [String: Any]
 
         return SwiftCoreConfiguration(
@@ -360,6 +394,7 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
             rules: rules.isEmpty ? [SwiftCoreRule(type: "MATCH", payload: "", proxy: groups[0].name)] : rules,
             ruleProviders: ruleProviders,
             dns: dns,
+            tun: tun,
             geoipURL: (geox?["geoip"] as? String) ?? defaultGeoIPURL,
             geositeURL: (geox?["geosite"] as? String) ?? defaultGeoSiteURL
         )
@@ -412,6 +447,26 @@ public struct SwiftCoreConfiguration: Equatable, Sendable {
             nameserverPolicy: policy,
             defaultNameservers: stringList(dns["default-nameserver"]),
             hosts: hosts
+        )
+    }
+
+    private static func parseTUN(_ value: Any?) -> SwiftCoreTUNConfig {
+        func stringList(_ any: Any?) -> [String] {
+            if let list = any as? [String] { return list }
+            if let list = any as? [Any] { return list.compactMap { $0 as? String } }
+            return []
+        }
+        guard let tun = value as? [String: Any] else {
+            return SwiftCoreTUNConfig()
+        }
+        return SwiftCoreTUNConfig(
+            enable: (tun["enable"] as? Bool) ?? false,
+            device: (tun["device"] as? String) ?? "",
+            mtu: (tun["mtu"] as? Int) ?? 9000,
+            address: stringList(tun["inet4-address"] ?? tun["address"]),
+            stack: (tun["stack"] as? String) ?? "system",
+            autoRoute: (tun["auto-route"] as? Bool) ?? true,
+            dnsHijack: stringList(tun["dns-hijack"])
         )
     }
 
