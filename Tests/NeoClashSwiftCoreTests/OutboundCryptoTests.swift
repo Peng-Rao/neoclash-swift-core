@@ -193,21 +193,26 @@ final class OutboundCryptoTests: XCTestCase {
         }
     }
 
-    func testVMessResponseRoundTrip() throws {
-        let (session, _, requestKey, requestIV, responseV) = makeSession()
+    /// Server side of the AEAD response header, shared by the response-path tests.
+    private func sealedResponseHeader(_ headerBytes: [UInt8], requestKey: [UInt8], requestIV: [UInt8]) throws -> [UInt8] {
         let responseKey = Array(SHA256.hash(data: Data(requestKey)).prefix(16))
         let responseIV = Array(SHA256.hash(data: Data(requestIV)).prefix(16))
-
-        // Server side: AEAD response header [V, 0, 0, 0].
-        let headerBytes: [UInt8] = [responseV, 0x00, 0x00, 0x00]
         let lengthKey = swiftCoreVMessKDF16(key: responseKey, path: [Array("AEAD Resp Header Len Key".utf8)])
         let lengthNonce = Array(swiftCoreVMessKDF(key: responseIV, path: [Array("AEAD Resp Header Len IV".utf8)]).prefix(12))
         let lengthSealed = try SwiftCoreAESGCM.seal(key: lengthKey, nonce: lengthNonce, plaintext: [0x00, UInt8(headerBytes.count)], aad: [])
         let payloadKey = swiftCoreVMessKDF16(key: responseKey, path: [Array("AEAD Resp Header Key".utf8)])
         let payloadNonce = Array(swiftCoreVMessKDF(key: responseIV, path: [Array("AEAD Resp Header IV".utf8)]).prefix(12))
         let payloadSealed = try SwiftCoreAESGCM.seal(key: payloadKey, nonce: payloadNonce, plaintext: headerBytes, aad: [])
+        return lengthSealed + payloadSealed
+    }
 
-        var wire = lengthSealed + payloadSealed
+    func testVMessResponseRoundTrip() throws {
+        let (session, _, requestKey, requestIV, responseV) = makeSession()
+        let responseKey = Array(SHA256.hash(data: Data(requestKey)).prefix(16))
+        let responseIV = Array(SHA256.hash(data: Data(requestIV)).prefix(16))
+
+        // Server side: AEAD response header [V, 0, 0, 0].
+        var wire = try sealedResponseHeader([responseV, 0x00, 0x00, 0x00], requestKey: requestKey, requestIV: requestIV)
 
         // Server side: one AEAD body chunk.
         let responseCipher = SwiftCoreVMessBodyCipher(security: .aesGCM, key: responseKey, iv: responseIV)
@@ -222,5 +227,76 @@ final class OutboundCryptoTests: XCTestCase {
         XCTAssertTrue(try session.decodeResponseHeader(&buffer))
         let recovered = try session.decodeBody(&buffer)
         XCTAssertEqual(recovered, payload)
+    }
+
+    func testVMessAdapterConfigValidation() {
+        let uuid = "22222222-2222-2222-2222-222222222222"
+        // Missing server, out-of-range port, missing uuid, and unknown ciphers are all rejected.
+        XCTAssertThrowsError(try SwiftCoreOutboundFactory.make(
+            proxy: SwiftCoreProxy(name: "m", type: "vmess", port: 443, uuid: uuid)
+        ))
+        XCTAssertThrowsError(try SwiftCoreOutboundFactory.make(
+            proxy: SwiftCoreProxy(name: "m", type: "vmess", server: "a", port: 0, uuid: uuid)
+        ))
+        XCTAssertThrowsError(try SwiftCoreOutboundFactory.make(
+            proxy: SwiftCoreProxy(name: "m", type: "vmess", server: "a", port: 443)
+        ))
+        XCTAssertThrowsError(try SwiftCoreOutboundFactory.make(
+            proxy: SwiftCoreProxy(name: "m", type: "vmess", server: "a", port: 443, uuid: uuid, cipher: "rc4-md5")
+        ))
+        // Both supported body ciphers build.
+        XCTAssertNotNil(try SwiftCoreOutboundFactory.make(
+            proxy: SwiftCoreProxy(name: "m", type: "vmess", server: "a", port: 443, uuid: uuid, cipher: "chacha20-poly1305")
+        ))
+    }
+
+    func testVMessBodySplitsLargePayloadIntoChunks() throws {
+        let (session, _, requestKey, requestIV, _) = makeSession()
+        let plaintext = (0..<40_000).map { UInt8(truncatingIfNeeded: $0) }
+        let framed = try session.encodeBody(plaintext)
+
+        let cipher = SwiftCoreVMessBodyCipher(security: .aesGCM, key: requestKey, iv: requestIV)
+        var buffer = framed
+        var chunkSizes: [Int] = []
+        var recovered: [UInt8] = []
+        var count: UInt16 = 0
+        while buffer.count >= 2 {
+            let size = Int(buffer[0]) << 8 | Int(buffer[1])
+            let sealed = Array(buffer[2..<(2 + size)])
+            buffer.removeFirst(2 + size)
+            let chunk = try cipher.open(sealed, count: count)
+            chunkSizes.append(chunk.count)
+            recovered.append(contentsOf: chunk)
+            count = count &+ 1
+        }
+        XCTAssertEqual(chunkSizes, [16_384, 16_384, 7_232]) // 16 KiB cap per chunk
+        XCTAssertEqual(recovered, plaintext)
+    }
+
+    func testVMessResponseHeaderRejectsWrongVerifyByte() throws {
+        let (session, _, requestKey, requestIV, responseV) = makeSession()
+        var wire = try sealedResponseHeader([responseV ^ 0xFF, 0x00, 0x00, 0x00], requestKey: requestKey, requestIV: requestIV)
+        XCTAssertThrowsError(try session.decodeResponseHeader(&wire))
+    }
+
+    func testVMessResponseDecodingWaitsForCompleteData() throws {
+        let (session, _, requestKey, requestIV, responseV) = makeSession()
+        let wire = try sealedResponseHeader([responseV, 0x00, 0x00, 0x00], requestKey: requestKey, requestIV: requestIV)
+
+        // Fewer than the 18 length-block bytes: no decode, nothing consumed.
+        var short = Array(wire[0..<10])
+        XCTAssertFalse(try session.decodeResponseHeader(&short))
+        XCTAssertEqual(short.count, 10)
+
+        // Length block present but the sealed header payload is incomplete: still waiting.
+        var partial = Array(wire[0..<(wire.count - 1)])
+        XCTAssertFalse(try session.decodeResponseHeader(&partial))
+        XCTAssertEqual(partial.count, wire.count - 1)
+
+        // A complete header decodes; a trailing partial body chunk stays buffered.
+        var complete = wire + [0x00] // first byte of a body length prefix
+        XCTAssertTrue(try session.decodeResponseHeader(&complete))
+        XCTAssertEqual(try session.decodeBody(&complete), [])
+        XCTAssertEqual(complete, [0x00])
     }
 }

@@ -141,6 +141,72 @@ final class GeoTests: XCTestCase {
         XCTAssertEqual(chosen(host: "8.8.8.8"), "P")      // MATCH fallthrough
     }
 
+    func testGeoLoaderReadsCachedGeoSiteAndRoutes() async throws {
+        let directory = NSTemporaryDirectory() + "neoclash-geo-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let cached = Data(geoSiteList([("CN", [(2, "weibo.com")])]))
+        try cached.write(to: URL(fileURLWithPath: directory + "/geosite.dat"))
+
+        let yaml = """
+        mixed-port: 7890
+        secret: s
+        proxies:
+          - { name: P, type: direct }
+        proxy-groups:
+          - { name: G, type: select, proxies: [P, DIRECT] }
+        rules:
+          - GEOSITE,CN,DIRECT
+          - MATCH,P
+        """
+        let state = SwiftCoreState(configuration: try SwiftCoreConfiguration.parse(yaml: yaml))
+        let loader = SwiftCoreGeoLoader(
+            state: state,
+            directory: directory,
+            geoipURL: "http://invalid.invalid/geoip.dat",
+            geositeURL: "http://invalid.invalid/geosite.dat",
+            needsGeoIP: false,
+            needsGeoSite: true
+        )
+        await loader.load() // uses the cached file, no network
+
+        func chosen(host: String) -> String? {
+            guard case .outbound(let chain, _) = state.route(context: SwiftCoreRouteContext(host: host, destinationPort: 443)) else { return nil }
+            return chain.last
+        }
+        XCTAssertEqual(chosen(host: "api.weibo.com"), "DIRECT") // GEOSITE,CN
+        XCTAssertEqual(chosen(host: "example.org"), "P")        // MATCH fallthrough
+    }
+
+    func testGeoLoaderWarnsOnInvalidURLWithoutCache() async throws {
+        let directory = NSTemporaryDirectory() + "neoclash-geo-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+
+        let yaml = """
+        mixed-port: 7890
+        secret: s
+        proxy-groups:
+          - { name: G, type: select, proxies: [DIRECT] }
+        rules:
+          - MATCH,DIRECT
+        """
+        let state = SwiftCoreState(configuration: try SwiftCoreConfiguration.parse(yaml: yaml))
+        let loader = SwiftCoreGeoLoader(
+            state: state,
+            directory: directory,
+            geoipURL: "",
+            geositeURL: "",
+            needsGeoIP: true,
+            needsGeoSite: false
+        )
+        await loader.load()
+
+        XCTAssertNil(state.currentGeoIP())
+        let logs = state.drainLogObjects().map { $0["payload"] ?? "" }
+        XCTAssertTrue(logs.contains { $0.contains("invalid geo url") }, "\(logs)")
+    }
+
     // MARK: Filtered loading and compact ranges
 
     func testGeoIPCodeFilterSkipsUnrequestedCountries() {

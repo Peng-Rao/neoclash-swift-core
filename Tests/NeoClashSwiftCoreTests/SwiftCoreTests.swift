@@ -163,6 +163,31 @@ final class SwiftCoreTests: XCTestCase {
         XCTAssertTrue(response.contains("swift-core-ok /vless"), response)
     }
 
+    func testMixedProxyReportsClientFacingFailures() throws {
+        let mixedPort = try Self.unusedTCPPort()
+        let controllerPort = try Self.unusedTCPPort(excluding: [mixedPort])
+        let closedPort = try Self.unusedTCPPort(excluding: [mixedPort, controllerPort])
+
+        let configuration = try SwiftCoreConfiguration.parse(yaml: Self.sampleYAML(mixedPort: mixedPort, controllerPort: controllerPort))
+        let runtime = SwiftCoreRuntimeSession(configuration: configuration)
+        try runtime.start()
+        defer { runtime.stop() }
+
+        // A request that is neither SOCKS nor a valid proxy request gets an HTTP 400.
+        let badSocket = try TCPSocket(port: mixedPort)
+        try badSocket.write("BOGUS\r\n\r\n")
+        XCTAssertTrue(try badSocket.readString().contains("400 Bad Request"))
+        badSocket.close()
+
+        // SOCKS5 CONNECT to a closed port reports failure (0x01) instead of success.
+        let socksSocket = try TCPSocket(port: mixedPort)
+        try socksSocket.writeBytes([0x05, 0x01, 0x00])
+        XCTAssertEqual(try socksSocket.readBytes(max: 2), [0x05, 0x00])
+        try socksSocket.writeBytes([0x05, 0x01, 0x00, 0x01, 127, 0, 0, 1, UInt8(closedPort >> 8), UInt8(closedPort & 0xff)])
+        XCTAssertEqual(try socksSocket.readBytes(max: 10).prefix(2), [0x05, 0x01])
+        socksSocket.close()
+    }
+
     func testDelayEndpointMeasuresDirect() async throws {
         let mixedPort = try Self.unusedTCPPort()
         let controllerPort = try Self.unusedTCPPort(excluding: [mixedPort])
