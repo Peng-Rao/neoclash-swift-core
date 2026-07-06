@@ -33,10 +33,11 @@ final class TUNTests: XCTestCase {
 
         let ip = try! XCTUnwrap(SwiftCoreIPv4Packet(packet))
         XCTAssertEqual(ip.proto, SwiftCoreIPProtocol.udp)
-        let header = SwiftCoreUDPHeader(ip.payload)
-        XCTAssertEqual(header?.sourcePort, 53038)
-        XCTAssertEqual(header?.destinationPort, 53)
-        XCTAssertEqual(header?.length, 12)
+        let datagram = SwiftCoreUDPDatagram(ip.payload)
+        XCTAssertEqual(datagram?.sourcePort, 53038)
+        XCTAssertEqual(datagram?.destinationPort, 53)
+        XCTAssertEqual(datagram?.length, 12)
+        XCTAssertEqual(datagram?.payload.count, 4)
     }
 
     func testRejectsNonIPv4() {

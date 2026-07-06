@@ -59,21 +59,6 @@ struct SwiftCoreTCPHeader {
     var isRST: Bool { flags & 0x04 != 0 }
 }
 
-/// UDP header fields (ports + length).
-struct SwiftCoreUDPHeader {
-    let sourcePort: Int
-    let destinationPort: Int
-    let length: Int
-
-    init?(_ payload: ArraySlice<UInt8>) {
-        guard payload.count >= 8 else { return nil }
-        let base = payload.startIndex
-        self.sourcePort = Int(payload[base]) << 8 | Int(payload[base + 1])
-        self.destinationPort = Int(payload[base + 2]) << 8 | Int(payload[base + 3])
-        self.length = Int(payload[base + 4]) << 8 | Int(payload[base + 5])
-    }
-}
-
 /// ICMP header fields (type + code).
 struct SwiftCoreICMPHeader {
     static let echoReply: UInt8 = 0

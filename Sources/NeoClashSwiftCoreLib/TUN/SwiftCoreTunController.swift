@@ -18,6 +18,8 @@ final class SwiftCoreTunController: @unchecked Sendable {
     private let loop: EventLoop
     /// Writes a finished IP packet back toward the app (the TUN device in production).
     private var emit: ([UInt8]) -> Void
+    private let dnsResponder: SwiftCoreDNSResponder?
+    private let dnsHijack: [SwiftCoreDNSHijackTarget]
     private var device: SwiftCoreTunDevice?
     private lazy var stack = SwiftCoreTCPStack(
         emit: { [weak self] packet in self?.emit(packet) },
@@ -26,11 +28,20 @@ final class SwiftCoreTunController: @unchecked Sendable {
 
     /// Designated init. Tests inject an explicit `loop` + `emit`; production passes neither and the
     /// device is wired in `start`.
-    init(state: SwiftCoreState, group: EventLoopGroup, loop: EventLoop? = nil, emit: (([UInt8]) -> Void)? = nil) {
+    init(
+        state: SwiftCoreState,
+        group: EventLoopGroup,
+        loop: EventLoop? = nil,
+        emit: (([UInt8]) -> Void)? = nil,
+        dnsResponder: SwiftCoreDNSResponder? = nil,
+        dnsHijack: [SwiftCoreDNSHijackTarget] = []
+    ) {
         self.state = state
         self.group = group
         self.loop = loop ?? group.next()
         self.emit = emit ?? { _ in }
+        self.dnsResponder = dnsResponder
+        self.dnsHijack = dnsHijack
     }
 
     /// Opens the device and starts the read loop. Requires root; unprivileged runs log a warning and
@@ -74,8 +85,39 @@ final class SwiftCoreTunController: @unchecked Sendable {
             }
         case SwiftCoreIPProtocol.tcp:
             stack.receive(ip: ip)
+        case SwiftCoreIPProtocol.udp:
+            handleUDP(ip)
         default:
             break
+        }
+    }
+
+    /// Answers a `dns-hijack` UDP query locally (fake-ip / resolver). Non-hijacked UDP is dropped —
+    /// general UDP relay needs UDP-capable outbounds, which come in a later step.
+    private func handleUDP(_ ip: SwiftCoreIPv4Packet) {
+        guard let responder = dnsResponder,
+              let datagram = SwiftCoreUDPDatagram(ip.payload),
+              dnsHijack.contains(where: { $0.matches(destination: ip.destination, port: datagram.destinationPort) }) else {
+            return
+        }
+        let source = ip.source
+        let destination = ip.destination
+        let sourcePort = datagram.sourcePort
+        let destinationPort = datagram.destinationPort
+        let query = datagram.payload
+        let loop = self.loop
+        Task { [weak self] in
+            let response = await responder.answer(query: query)
+            loop.execute {
+                guard let self else { return }
+                // Reply from the address the app queried (destination) back to the app (source).
+                let reply = SwiftCoreUDPDatagram.build(
+                    source: destination, destination: source,
+                    sourcePort: destinationPort, destinationPort: sourcePort,
+                    payload: response
+                )
+                self.emit(reply)
+            }
         }
     }
 
